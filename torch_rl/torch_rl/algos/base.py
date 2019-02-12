@@ -63,7 +63,7 @@ class BaseAlgo(ABC):
         # Store helpers values
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.num_procs = len(envs)
+        self.num_procs = sum(map(len, envs)) if isinstance(envs[0], list) else len(envs)
         self.num_frames = self.num_frames_per_proc * self.num_procs
 
         # Control parameters
@@ -119,7 +119,6 @@ class BaseAlgo(ABC):
             Useful stats about the training process, including the average
             reward, policy loss, value loss, etc.
         """
-
         for i in range(self.num_frames_per_proc):
             # Do one agent-environment interaction
 
@@ -151,6 +150,7 @@ class BaseAlgo(ABC):
                 ], device=self.device)
             else:
                 self.rewards[i] = torch.tensor(reward, device=self.device)
+
             self.log_probs[i] = dist.log_prob(action)
 
             # Update log values

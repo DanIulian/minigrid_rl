@@ -1,0 +1,6 @@
+_experiment_parameters:
+  env: MiniGrid-ObstructedMaze-1Dl-v0
+cfg_id: 11
+main:
+  env: MiniGrid-ObstructedMaze-1Dl-v0
+title: env=MiniGrid-ObstructedMaze-1Dl-v0

@@ -1,3 +1,7 @@
+.idea/
+.liftoff_cfg.yaml
+results/
+
 *__pycache__
 *egg-info
 .vscode

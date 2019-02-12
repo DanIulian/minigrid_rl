@@ -1,0 +1,6 @@
+_experiment_parameters:
+  env: MiniGrid-DoorKey-16x16-v0
+cfg_id: 6
+main:
+  env: MiniGrid-DoorKey-16x16-v0
+title: env=MiniGrid-DoorKey-16x16-v0

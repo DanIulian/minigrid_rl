@@ -1,0 +1,6 @@
+_experiment_parameters:
+  env: MiniGrid-MultiRoom-N2-S4-v0
+cfg_id: 7
+main:
+  env: MiniGrid-MultiRoom-N2-S4-v0
+title: env=MiniGrid-MultiRoom-N2-S4-v0

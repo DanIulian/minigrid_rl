@@ -1,0 +1,6 @@
+_experiment_parameters:
+  env: MiniGrid-LavaCrossingS9N1-v0
+cfg_id: 12
+main:
+  env: MiniGrid-LavaCrossingS9N1-v0
+title: env=MiniGrid-LavaCrossingS9N1-v0
