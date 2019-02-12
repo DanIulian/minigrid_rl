@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # PyTorch A2C and PPO deep reinforcement learning algorithms
 
 The `torch_rl` package actually contains the PyTorch implementation of two Actor-Critic deep reinforcement learning algorithms:
@@ -188,3 +189,6 @@ An example of use of `torch_rl.DictList` is given in the `preprocess_obss` funct
 An example of implementation of `torch_rl.RecurrentACModel` abstract class is defined in `model.py`
 
 Examples of `preprocess_obss` functions are given in `utils/format.py`.
+=======
+# minigrid_rl
+>>>>>>> c5f5151f43acbf4eb8b03363fc37942d4ea90c4f
