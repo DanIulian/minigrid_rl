@@ -1,3 +1,7 @@
+"""
+    Copyright (c) https://github.com/lcswillems/torch-rl
+"""
+
 class DictList(dict):
     """A dictionnary of lists of same size. Dictionnary items can be
     accessed using `.` notation and list items using `[]` notation.
