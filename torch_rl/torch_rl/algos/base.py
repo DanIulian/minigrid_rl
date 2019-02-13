@@ -1,3 +1,7 @@
+"""
+    Copyright (c) https://github.com/lcswillems/torch-rl
+"""
+
 from abc import ABC, abstractmethod
 import torch
 import numpy

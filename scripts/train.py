@@ -1,3 +1,7 @@
+"""
+    Copyright (c) https://github.com/lcswillems/torch-rl
+"""
+
 #!/usr/bin/env python3
 
 import argparse

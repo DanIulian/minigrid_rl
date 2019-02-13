@@ -1,3 +1,7 @@
+"""
+    Copyright (c) https://github.com/lcswillems/torch-rl
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
