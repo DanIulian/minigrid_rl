@@ -28,7 +28,7 @@ def run(full_args: Namespace) -> None:
     args = full_args.main
 
     if args.seed == 0:
-        args.seed = args.run_id + 1
+        args.seed = full_args.run_id + 1
     max_eprews = args.max_eprews
 
     post_process_args(args)
