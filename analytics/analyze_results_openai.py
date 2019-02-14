@@ -2,11 +2,11 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
-from .utils import get_experiment_files
+from analytics.utils import get_experiment_files
 
 
 # -- Load experiment Data
-experiment_path = "results/2019Feb14-155310_openai_rnd/"
+experiment_path = "results/2019Feb14-164238_openai_rnd/"
 data, cfgs, df = get_experiment_files(experiment_path, files={"progress.csv": "read_csv"})
 
 

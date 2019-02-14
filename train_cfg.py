@@ -27,6 +27,10 @@ def run(full_args: Namespace) -> None:
 
     args = full_args.main
 
+    if args.seed == 0:
+        args.seed = args.run_id + 1
+    max_eprews = args.max_eprews
+
     post_process_args(args)
     model_dir = getattr(args, "model_dir", full_args.out_dir)
 
@@ -57,6 +61,8 @@ def run(full_args: Namespace) -> None:
     if actual_procs:
         # Split envs in chunks
         env = gym.make(args.env)
+        env.max_steps = args.max_episode_steps
+
         env.seed(args.seed + 10000 * 0)
         envs.append([env])
         for env_i in range(1, args.procs, actual_procs):
@@ -70,6 +76,8 @@ def run(full_args: Namespace) -> None:
     else:
         for i in range(args.procs):
             env = gym.make(args.env)
+            env.max_steps = args.max_episode_steps
+
             env.seed(args.seed + 10000 * i)
             envs.append(env)
         first_env = envs[0]
@@ -163,7 +171,7 @@ def run(full_args: Namespace) -> None:
 
             status = {"num_frames": num_frames, "update": update}
 
-            if list(rreturn_per_episode.values())[0] > 0.90:
+            if list(rreturn_per_episode.values())[0] > max_eprews:
                 reached_max_return = True
 
         # Save vocabulary and model
