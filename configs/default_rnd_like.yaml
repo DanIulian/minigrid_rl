@@ -23,3 +23,5 @@ main:
   batch_size: 256 # type=int, default=256, help="batch size for PPO (default: 256)")
   recurrence: 1 # type=int, default=1, help="number of timesteps gradient is backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   text: False # action="store_true", default=False, help="add a GRU to the model to handle text input")
+
+  optim: Adam
