@@ -42,9 +42,34 @@ for run_index, cfg_file in enumerate(cfg_files):
 log_dfs = pd.concat(log_dfs)
 cfg_dfs = pd.concat(cfg_dfs)
 
+df = pd.merge(log_dfs, cfg_dfs, how="outer", on="run_index")
+
 # check experiment id is unique
 if cfg_dfs.experiment_id.duplicated().any():
     print("[ALERT] Duplicate ids found")
 
 
 log_dfs.boxplot(by="run_index", column="FPS", grid=0)
+
+experiments_group = df.groupby("experiment_id")
+
+size = int(pow(experiments_group.ngroups,1/2))+1
+plt.figure()
+# Iterate through continents
+
+for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
+    # create subplot axes in a 3x3 grid
+    ax = plt.subplot(size, size, i + 1) # nrows, ncols, axes position
+    # plot the continent on these axes
+    exp_gdf.groupby("run_id").plot("frames", "rreturn_mean", ax=ax, legend=False)
+    # set the title
+    ax.set_title(exp_gdf.iloc[0].title)
+    # set the aspect
+    # adjustable datalim ensure that the plots have the same axes size
+    # ax.set_aspect('equal', adjustable='datalim')
+    plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
+
+# plt.subplots_adjust(wspace=0, hspace=0)
+plt.tight_layout()
+plt.show()
+
