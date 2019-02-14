@@ -1,6 +1,0 @@
-_experiment_parameters:
-  env: MiniGrid-Empty-6x6-v0
-cfg_id: 0
-main:
-  env: MiniGrid-Empty-6x6-v0
-title: env=MiniGrid-Empty-6x6-v0

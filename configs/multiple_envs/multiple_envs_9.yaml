@@ -1,6 +1,0 @@
-_experiment_parameters:
-  env: MiniGrid-UnlockPickup-v0
-cfg_id: 9
-main:
-  env: MiniGrid-UnlockPickup-v0
-title: env=MiniGrid-UnlockPickup-v0

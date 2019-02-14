@@ -1,6 +1,0 @@
-_experiment_parameters:
-  env: MiniGrid-MultiRoom-N6-v0
-cfg_id: 8
-main:
-  env: MiniGrid-MultiRoom-N6-v0
-title: env=MiniGrid-MultiRoom-N6-v0
