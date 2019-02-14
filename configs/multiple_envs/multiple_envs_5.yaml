@@ -1,6 +1,0 @@
-_experiment_parameters:
-  env: MiniGrid-DoorKey-8x8-v0
-cfg_id: 5
-main:
-  env: MiniGrid-DoorKey-8x8-v0
-title: env=MiniGrid-DoorKey-8x8-v0

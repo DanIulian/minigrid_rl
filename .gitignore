@@ -1,6 +1,9 @@
 .idea/
 .liftoff_cfg.yaml
 results/
+configs/*
+!configs/**/config*
+!configs/**/default*
 
 *__pycache__
 *egg-info

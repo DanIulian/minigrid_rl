@@ -1,0 +1,7 @@
+train_path: "../random-network-distillation/run_atari.py"
+main:
+  env: MiniGrid-Empty-6x6-v0
+  gamma_ext: 0.999
+  max_eprews: 0.92
+  num-timesteps: 2.e+7
+  max_episode_steps: 200

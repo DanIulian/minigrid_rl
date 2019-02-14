@@ -1,6 +1,0 @@
-_experiment_parameters:
-  env: MiniGrid-SimpleCrossingS9N1-v0
-cfg_id: 13
-main:
-  env: MiniGrid-SimpleCrossingS9N1-v0
-title: env=MiniGrid-SimpleCrossingS9N1-v0
