@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from agents.base_algo_v2 import BaseAlgov2
 
 
-class PPORND(BaseAlgov2):
+class PPO(BaseAlgov2):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
@@ -125,10 +125,7 @@ class PPORND(BaseAlgov2):
 
                 self.optimizer.zero_grad()
                 batch_loss.backward()
-                grad_norm = sum(
-                    p.grad.data.norm(2).item() ** 2 for p in self.acmodel.parameters()
-                    if p.grad is not None
-                ) ** 0.5
+                grad_norm = sum(p.grad.data.norm(2).item() ** 2 for p in self.acmodel.parameters()) ** 0.5
                 torch.nn.utils.clip_grad_norm_(self.acmodel.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 

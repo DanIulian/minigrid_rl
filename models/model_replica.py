@@ -11,39 +11,12 @@ import gym
 from models.utils import initialize_parameters
 
 
-class RNDModels(nn.Module, torch_rl.RecurrentACModel):
-    def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
-        super().__init__()
-
-        self.policy_model = RNDPredModel(cfg, obs_space, action_space, use_memory=use_memory,
-                                         use_text=use_text)
-
-        self.predictor_network = PredictionNetwork(cfg, obs_space, action_space)
-
-        self.random_target = RandomNetwork(cfg, obs_space, action_space)
-
-        self.memory_type = self.policy_model.memory_type
-        self.use_text = self.policy_model.use_text
-        self.use_memory = self.policy_model.use_memory
-
-    @property
-    def memory_size(self):
-        return 2*self.policy_model.semi_memory_size
-
-    @property
-    def semi_memory_size(self):
-        return self.policy_model.image_embedding_size
-
-    def forward(self, *args, **kwargs):
-        return self.policy_model(*args, **kwargs)
-
-
-class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
+class Model(nn.Module, torch_rl.RecurrentACModel):
     def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
         super().__init__()
 
         # CFG Information
-        self.memory_type = memory_type = cfg.memory_type
+        memory_type = cfg.memory_type
 
         # Decide which components are enabled
         self.use_text = use_text
@@ -65,18 +38,14 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
 
         # Define memory
         if self.use_memory:
-            if memory_type == "LSTM":
-                self.memory_rnn = nn.LSTMCell(self.image_embedding_size, self.semi_memory_size)
-            else:
-                raise NotImplemented
+            self.memory_rnn = nn.LSTMCell(self.image_embedding_size, self.semi_memory_size)
 
         # Define text embedding
         if self.use_text:
             self.word_embedding_size = 32
             self.word_embedding = nn.Embedding(obs_space["text"], self.word_embedding_size)
             self.text_embedding_size = 128
-            self.text_rnn = nn.GRU(self.word_embedding_size, self.text_embedding_size,
-                                   batch_first=True)
+            self.text_rnn = nn.GRU(self.word_embedding_size, self.text_embedding_size, batch_first=True)
 
         # Resize image embedding
         self.embedding_size = self.semi_memory_size
@@ -139,55 +108,3 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
     def _get_embed_text(self, text):
         _, hidden = self.text_rnn(self.word_embedding(text))
         return hidden[-1]
-
-
-class PredictionNetwork(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(PredictionNetwork, self).__init__()
-        n = obs_space["image"][0]
-        m = obs_space["image"][1]
-
-        self.conv1 = nn.Conv2d(3, 16, (2, 2))
-        self.conv2 = nn.Conv2d(16, 32, (2, 2))
-        self.conv3 = nn.Conv2d(32, 32, (2, 2))
-
-        image_embedding_size = ((n - 1) // 2 - 2) * ((m - 1) // 2 - 2) * 64
-
-        self.fc1 = nn.Linear(image_embedding_size, 512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 512)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
-class RandomNetwork(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(RandomNetwork, self).__init__()
-        n = obs_space["image"][0]
-        m = obs_space["image"][1]
-
-        self.conv1 = nn.Conv2d(3, 16, (2, 2))
-        self.conv2 = nn.Conv2d(16, 32, (2, 2))
-        self.conv3 = nn.Conv2d(32, 32, (2, 2))
-
-        image_embedding_size = ((n - 1) // 2 - 2) * ((m - 1) // 2 - 2) * 64
-
-        self.fc1 = nn.Linear(image_embedding_size, 512)
-        self.fc2 = nn.Linear(512, 512)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x

@@ -1,7 +1,9 @@
 from . import ppo_rnd
+from . import ppo_replica
 
 AGENTS = {
     "PPORND": ppo_rnd.PPORND,
+    "PPO": ppo_replica.PPO,
 }
 
 
