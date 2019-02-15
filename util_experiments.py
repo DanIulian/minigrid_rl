@@ -1,3 +1,5 @@
+# AndreiN, 2019
+
 import glob
 import os
 from os import listdir

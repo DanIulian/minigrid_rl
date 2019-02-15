@@ -1,4 +1,5 @@
-# Parts form https://github.com/lcswillems/torch-rl
+# AndreiN, 2019
+# parts from https://github.com/lcswillems/torch-rl
 
 #!/usr/bin/env python3
 
@@ -18,7 +19,8 @@ except ImportError:
     pass
 
 import utils
-from model import ACModel
+from models import get_model
+from agents import get_agent
 
 
 def post_process_args(args: NameError) -> None:
@@ -28,15 +30,20 @@ def post_process_args(args: NameError) -> None:
 def run(full_args: Namespace) -> None:
 
     args = full_args.main
+    agent_args = full_args.agent
+    model_args = full_args.model
 
     if args.seed == 0:
         args.seed = full_args.run_id + 1
     max_eprews = args.max_eprews
 
-    post_process_args(args)
-    model_dir = getattr(args, "model_dir", full_args.out_dir)
+    post_process_args(agent_args)
+    post_process_args(model_args)
 
-    # ==================================================================================================================
+    model_dir = getattr(args, "model_dir", full_args.out_dir)
+    print(model_dir)
+
+    # ==============================================================================================
     # @ torc_rl repo original
 
     # Define logger, CSV writer and Tensorboard writer
@@ -52,9 +59,11 @@ def run(full_args: Namespace) -> None:
     logger.info("{}\n".format(" ".join(sys.argv)))
     logger.info("{}\n".format(args))
 
+    # ==============================================================================================
     # Set seed for all randomness sources
     utils.seed(args.seed)
 
+    # ==============================================================================================
     # Generate environments
 
     envs = []
@@ -86,8 +95,10 @@ def run(full_args: Namespace) -> None:
 
     # Define obss preprocessor
 
-    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space, model_dir)
+    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
+                                                             model_dir)
 
+    # ==============================================================================================
     # Load training status
 
     try:
@@ -95,34 +106,42 @@ def run(full_args: Namespace) -> None:
     except OSError:
         status = {"num_frames": 0, "update": 0}
 
-    # Define actor-critic model
-
+    saver = utils.SaveData(model_dir, save_best=args.save_best, save_all=args.save_all)
+    model, agent_data, other_data = None, dict(), None
     try:
-        acmodel = utils.load_model(model_dir)
-        logger.info("Model successfully loaded\n")
+        # Continue from last point
+        model, agent_data, other_data = saver.load_training_data(best=False)
+        logger.info("Training data exists & loaded successfully\n")
     except OSError:
-        acmodel = ACModel(obs_space, first_env.action_space, args.mem, args.text)
-        logger.info("Model successfully created\n")
-    logger.info("{}\n".format(acmodel))
+        logger.info("Could not load training data\n")
+
+    # ==============================================================================================
+    # Load Model
+
+    if model is None:
+        model = get_model(model_args, obs_space, first_env.action_space,
+                          use_memory=model_args.mem, use_text=model_args.text)
+        logger.info(f"Model [{model_args.name}] successfully created\n")
+
+        # Print Model info
+        logger.info("{}\n".format(model))
 
     if torch.cuda.is_available():
-        acmodel.cuda()
+        model.cuda()
     logger.info("CUDA available: {}\n".format(torch.cuda.is_available()))
 
-    # Define actor-critic algo
-    if args.algo == "a2c":
-        algo = torch_rl.A2CAlgo(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_alpha, args.optim_eps, preprocess_obss)
-    elif args.algo == "ppo":
-        algo = torch_rl.PPOAlgo(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.gae_lambda,
-                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                                args.optim_eps, args.clip_eps, args.epochs, args.batch_size, preprocess_obss)
-    else:
-        raise ValueError("Incorrect algorithm name: {}".format(args.algo))
+    # ==============================================================================================
+    # Load Agent
 
+    algo = get_agent(full_args.agent, envs, model, agent_data,
+                     preprocess_obss=preprocess_obss, reshape_reward=None)
+
+    # ==============================================================================================
     # Train model
 
+    crt_eprew = 0
+    if "eprew" in other_data:
+        crt_eprew = other_data["eprew"]
     num_frames = status["num_frames"]
     total_start_time = time.time()
     update = status["update"]
@@ -138,7 +157,6 @@ def run(full_args: Namespace) -> None:
         update += 1
 
         # Print logs
-        reached_max_return = False
         if update % args.log_interval == 0:
             fps = logs["num_frames"] / (update_end_time - update_start_time)
             duration = int(time.time() - total_start_time)
@@ -153,11 +171,13 @@ def run(full_args: Namespace) -> None:
             header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
             data += num_frames_per_episode.values()
             header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
-            data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"], logs["grad_norm"]]
+            data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"]]
+            data += [logs["grad_norm"]]
 
             logger.info(
-                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | ∇ {:.3f}"
-                    .format(*data))
+                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | "
+                "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "
+                "∇ {:.3f}".format(*data))
 
             header += ["return_" + key for key in return_per_episode.keys()]
             data += return_per_episode.values()
@@ -173,27 +193,22 @@ def run(full_args: Namespace) -> None:
 
             status = {"num_frames": num_frames, "update": update}
 
-            if list(rreturn_per_episode.values())[0] > max_eprews:
-                reached_max_return = True
+            crt_eprew = list(rreturn_per_episode.values())[0]
 
-        # Save vocabulary and model
+        # -- Save vocabulary and model
 
         if args.save_interval > 0 and update % args.save_interval == 0:
             preprocess_obss.vocab.save()
 
-            if torch.cuda.is_available():
-                acmodel.cpu()
-            utils.save_model(acmodel, model_dir)
+            saver.save_training_data(model, algo.get_save_data(), crt_eprew)
+
             logger.info("Model successfully saved")
-            if torch.cuda.is_available():
-                acmodel.cuda()
 
             utils.save_status(status, model_dir)
 
-        if reached_max_return > 0:
-            print("reached max return 0.9")
+        if crt_eprew > max_eprews:
+            print("Reached max return 0.9")
             exit()
-    # ==================================================================================================================
 
 
 def main() -> None:

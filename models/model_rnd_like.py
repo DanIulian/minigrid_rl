@@ -1,6 +1,5 @@
-"""
-    Copyright (c) https://github.com/lcswillems/torch-rl
-"""
+# AndreiN, 2019
+# parts from https://github.com/lcswillems/torch-rl
 
 import torch
 import torch.nn as nn
@@ -9,18 +8,15 @@ from torch.distributions.categorical import Categorical
 import torch_rl
 import gym
 
-# Function from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
-def initialize_parameters(m):
-    classname = m.__class__.__name__
-    if classname.find('Linear') != -1:
-        m.weight.data.normal_(0, 1)
-        m.weight.data *= 1 / torch.sqrt(m.weight.data.pow(2).sum(1, keepdim=True))
-        if m.bias is not None:
-            m.bias.data.fill_(0)
+from models.utils import initialize_parameters
 
-class ACModel(nn.Module, torch_rl.RecurrentACModel):
-    def __init__(self, obs_space, action_space, use_memory=False, use_text=False):
+
+class RNDModel(nn.Module, torch_rl.RecurrentACModel):
+    def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
         super().__init__()
+
+        # CFG Information
+        memory_type = cfg.memory_type
 
         # Decide which components are enabled
         self.use_text = use_text

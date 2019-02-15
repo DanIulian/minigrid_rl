@@ -1,5 +1,7 @@
 main:
+  algo: ppo  # required=True, help="algorithm to use: a2c | ppo (REQUIRED)")
   env: MiniGrid-Empty-6x6-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  model: null # default=None, help="name of the model (default: {ENV}_{ALGO}_{TIME})")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 3 # type=int, default=16, help="number of processes (default: 16)")
@@ -7,17 +9,6 @@ main:
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
   tb: false # action="store_true", default=False, help="log into Tensorboard")
-  text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
-
-  max_eprews: 0.98 # Cap training when mean episode rewards reaches this value
-  save_best: true
-  save_all: false
-
-env_cfg:
-  max_episode_steps: 200 # environment steps
-
-agent:
-  name: PPORND
   frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update (default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   lr: 7.e-4 # type=float, default=7e-4, help="learning rate for optimizers (default: 7e-4)")
@@ -30,12 +21,8 @@ agent:
   clip_eps: 0.2 # type=float, default=0.2, help="clipping epsilon for PPO (default: 0.2)")
   epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
   batch_size: 256 # type=int, default=256, help="batch size for PPO (default: 256)")
-  recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
-  # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
+  recurrence: 1 # type=int, default=1, help="number of timesteps gradient is backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
+  text: False # action="store_true", default=False, help="add a GRU to the model to handle text input")
 
-model:
-  name: RNDModel
-  recurrence: *recurrence
-  text: *text
-  memory_type: LSTM
-
+  max_eprews: 0.98
+  max_episode_steps: 200
