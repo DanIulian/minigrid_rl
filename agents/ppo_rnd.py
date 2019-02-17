@@ -6,10 +6,10 @@ import numpy
 import torch
 import torch.nn.functional as F
 
-from agents.base_algo_v2 import BaseAlgov2
+from agents.two_v_base import TwoValueHeadsBase
 
 
-class PPORND(BaseAlgov2):
+class PPORND(TwoValueHeadsBase):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
@@ -35,6 +35,8 @@ class PPORND(BaseAlgov2):
         self.clip_eps = clip_eps
         self.epochs = epochs
         self.batch_size = batch_size
+        self.int_coeff = cfg.int_coeff
+        self.ext_coeff = cfg.ext_coeff
 
         assert self.batch_size % self.recurrence == 0
 
@@ -55,18 +57,22 @@ class PPORND(BaseAlgov2):
             # Initialize log values
 
             log_entropies = []
-            log_values = []
+            log_values_ext = []
+            log_values_int = []
             log_policy_losses = []
-            log_value_losses = []
+            log_value_ext_losses = []
+            log_value_int_losses = []
             log_grad_norms = []
 
             for inds in self._get_batches_starting_indexes():
                 # Initialize batch values
 
                 batch_entropy = 0
-                batch_value = 0
+                batch_ext_value = 0
+                batch_int_value = 0
                 batch_policy_loss = 0
-                batch_value_loss = 0
+                batch_value_ext_loss = 0
+                batch_value_int_loss = 0
                 batch_loss = 0
 
                 # Initialize memory
@@ -82,30 +88,43 @@ class PPORND(BaseAlgov2):
                     # Compute loss
 
                     if self.acmodel.recurrent:
-                        dist, value, memory = self.acmodel(sb.obs, memory * sb.mask)
+                        dist, vvalue, memory = self.acmodel(sb.obs, memory * sb.mask)
                     else:
-                        dist, value = self.acmodel(sb.obs)
+                        dist, vvalue = self.acmodel(sb.obs)
 
                     entropy = dist.entropy().mean()
 
                     ratio = torch.exp(dist.log_prob(sb.action) - sb.log_prob)
-                    surr1 = ratio * sb.advantage
-                    surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * sb.advantage
+                    adv = (self.int_coeff * sb.advantage_int + self.ext_coeff * sb.advantage_ext)
+                    surr1 = ratio * adv
+                    surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * adv
                     policy_loss = -torch.min(surr1, surr2).mean()
 
-                    value_clipped = sb.value + torch.clamp(value - sb.value, -self.clip_eps, self.clip_eps)
-                    surr1 = (value - sb.returnn).pow(2)
-                    surr2 = (value_clipped - sb.returnn).pow(2)
-                    value_loss = torch.max(surr1, surr2).mean()
+                    # Value losses
+                    value_ext, value_int = vvalue
 
-                    loss = policy_loss - self.entropy_coef * entropy + self.value_loss_coef * value_loss
+                    value_ext_clipped = sb.value_ext + torch.clamp(value_ext - sb.value_ext, -self.clip_eps, self.clip_eps)
+                    surr1 = (value_ext - sb.returnn_ext).pow(2)
+                    surr2 = (value_ext_clipped - sb.returnn_ext).pow(2)
+                    value_ext_loss = torch.max(surr1, surr2).mean()
+
+                    value_int_clipped = sb.value_int + torch.clamp(value_int - sb.value_int, -self.clip_eps, self.clip_eps)
+                    surr1 = (value_int - sb.returnn_int).pow(2)
+                    surr2 = (value_int_clipped - sb.returnn_int).pow(2)
+                    value_int_loss = torch.max(surr1, surr2).mean()
+
+                    loss = policy_loss - self.entropy_coef * entropy + \
+                           (0.5 * self.value_loss_coef) * value_int_loss + \
+                           (0.5 * self.value_loss_coef) * value_ext_loss
 
                     # Update batch values
 
                     batch_entropy += entropy.item()
-                    batch_value += value.mean().item()
+                    batch_ext_value += value_ext.mean().item()
+                    batch_int_value += value_int.mean().item()
                     batch_policy_loss += policy_loss.item()
-                    batch_value_loss += value_loss.item()
+                    batch_value_ext_loss += value_ext_loss.item()
+                    batch_value_int_loss += value_int_loss.item()
                     batch_loss += loss
 
                     # Update memories for next epoch
@@ -116,9 +135,11 @@ class PPORND(BaseAlgov2):
                 # Update batch values
 
                 batch_entropy /= self.recurrence
-                batch_value /= self.recurrence
+                batch_ext_value /= self.recurrence
+                batch_int_value /= self.recurrence
                 batch_policy_loss /= self.recurrence
-                batch_value_loss /= self.recurrence
+                batch_value_ext_loss /= self.recurrence
+                batch_value_int_loss /= self.recurrence
                 batch_loss /= self.recurrence
 
                 # Update actor-critic
@@ -135,17 +156,23 @@ class PPORND(BaseAlgov2):
                 # Update log values
 
                 log_entropies.append(batch_entropy)
-                log_values.append(batch_value)
+                log_values_ext.append(batch_ext_value)
+                log_values_int.append(batch_int_value)
                 log_policy_losses.append(batch_policy_loss)
-                log_value_losses.append(batch_value_loss)
+                log_value_ext_losses.append(batch_value_ext_loss)
+                log_value_int_losses.append(batch_value_int_loss)
                 log_grad_norms.append(grad_norm)
 
         # Log some values
 
         logs["entropy"] = numpy.mean(log_entropies)
-        logs["value"] = numpy.mean(log_values)
+        logs["value_ext"] = numpy.mean(log_values_ext)
+        logs["value_int"] = numpy.mean(log_values_int)
+        logs["value"] = logs["value_ext"] + logs["value_int"]
         logs["policy_loss"] = numpy.mean(log_policy_losses)
-        logs["value_loss"] = numpy.mean(log_value_losses)
+        logs["value_ext_loss"] = numpy.mean(log_value_ext_losses)
+        logs["value_int_loss"] = numpy.mean(log_value_int_losses)
+        logs["value_loss"] = logs["value_int_loss"] + logs["value_ext_loss"]
         logs["grad_norm"] = numpy.mean(log_grad_norms)
 
         return logs
