@@ -12,7 +12,8 @@ import gym
 
 import utils
 
-def get_obss_preprocessor(env_id, obs_space, model_dir):
+
+def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., normalize=True):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -20,7 +21,8 @@ def get_obss_preprocessor(env_id, obs_space, model_dir):
         vocab = Vocabulary(model_dir, obs_space["text"])
         def preprocess_obss(obss, device=None):
             return torch_rl.DictList({
-                "image": preprocess_images([obs["image"] for obs in obss], device=device),
+                "image": preprocess_images([obs["image"] for obs in obss], device=device,
+                                           max_image_value=max_image_value, normalize=normalize),
                 "text": preprocess_texts([obs["mission"] for obs in obss], vocab, device=device)
             })
         preprocess_obss.vocab = vocab
@@ -39,10 +41,13 @@ def get_obss_preprocessor(env_id, obs_space, model_dir):
 
     return obs_space, preprocess_obss
 
-def preprocess_images(images, device=None):
+def preprocess_images(images, device=None, max_image_value=15., normalize=True):
     # Bug of Pytorch: very slow if not first converted to numpy array
     images = numpy.array(images)
-    return torch.tensor(images, device=device, dtype=torch.float)
+    images = torch.tensor(images, device=device, dtype=torch.float)
+    if normalize:
+        images.div_(max_image_value)
+    return images
 
 def preprocess_texts(texts, vocab, device=None):
     var_indexed_texts = []

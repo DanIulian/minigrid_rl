@@ -94,9 +94,12 @@ def run(full_args: Namespace) -> None:
         first_env = envs[0]
 
     # Define obss preprocessor
-
+    max_image_value = full_args.env_cfg.max_image_value
+    normalize_img = full_args.env_cfg.normalize
     obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
-                                                             model_dir)
+                                                             model_dir,
+                                                             max_image_value=max_image_value,
+                                                             normalize=normalize_img)
 
     # ==============================================================================================
     # Load training status

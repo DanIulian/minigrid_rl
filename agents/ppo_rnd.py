@@ -7,7 +7,8 @@ import torch
 import torch.nn.functional as F
 
 from agents.two_v_base import TwoValueHeadsBase
-
+from torch_rl.utils import DictList
+from utils.utils import RunningMeanStd
 
 class PPORND(TwoValueHeadsBase):
     """The class for the Proximal Policy Optimization algorithm
@@ -40,11 +41,20 @@ class PPORND(TwoValueHeadsBase):
 
         assert self.batch_size % self.recurrence == 0
 
-        self.optimizer = getattr(torch.optim, optimizer)(self.acmodel.parameters(), lr,
-                                                         eps=adam_eps)
+        self.optimizer_policy = getattr(torch.optim, optimizer)(
+            self.acmodel.policy_model.parameters(), lr,eps=adam_eps)
 
-        if "optimizer" in agent_data:
-            self.optimizer.load_state_dict(agent_data["optimizer"])
+        # Prepare intrinsic generators
+        self.acmodel.random_target.eval()
+        self.predictor_rms = RunningMeanStd()
+
+        self.optimizer_predictor = getattr(torch.optim, optimizer)(
+            self.acmodel.predictor_network.parameters(), lr,eps=adam_eps)
+
+        if "optimizer_policy" in agent_data:
+            self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
+            self.optimizer_predictor.load_state_dict(agent_data["optimizer_predictor"])
+            self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
         self.batch_num = 0
 
@@ -88,9 +98,9 @@ class PPORND(TwoValueHeadsBase):
                     # Compute loss
 
                     if self.acmodel.recurrent:
-                        dist, vvalue, memory = self.acmodel(sb.obs, memory * sb.mask)
+                        dist, vvalue, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
                     else:
-                        dist, vvalue = self.acmodel(sb.obs)
+                        dist, vvalue = self.acmodel.policy_model(sb.obs)
 
                     entropy = dist.entropy().mean()
 
@@ -144,14 +154,15 @@ class PPORND(TwoValueHeadsBase):
 
                 # Update actor-critic
 
-                self.optimizer.zero_grad()
+                self.optimizer_policy.zero_grad()
                 batch_loss.backward()
                 grad_norm = sum(
-                    p.grad.data.norm(2).item() ** 2 for p in self.acmodel.parameters()
+                    p.grad.data.norm(2).item() ** 2 for p in self.acmodel.policy_model.parameters()
                     if p.grad is not None
                 ) ** 0.5
-                torch.nn.utils.clip_grad_norm_(self.acmodel.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                torch.nn.utils.clip_grad_norm_(self.acmodel.policy_model.parameters(),
+                                               self.max_grad_norm)
+                self.optimizer_policy.step()
 
                 # Update log values
 
@@ -206,4 +217,66 @@ class PPORND(TwoValueHeadsBase):
         return batches_starting_indexes
 
     def get_save_data(self):
-        return dict({"optimizer": self.optimizer.state_dict()})
+        return dict({
+            "optimizer_policy": self.optimizer_policy.state_dict(),
+            "optimizer_predictor": self.optimizer_predictor.state_dict(),
+            "predictor_rms": self.predictor_rms,
+        })
+
+    def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
+
+        """
+        replicate (should normalize by a running mean):
+            X_r -- random target
+            X_r_hat -- predictor
+
+            self.feat_var = tf.reduce_mean(tf.nn.moments(X_r, axes=[0])[1])
+            self.max_feat = tf.reduce_max(tf.abs(X_r))
+            self.int_rew = tf.reduce_mean(tf.square(tf.stop_gradient(X_r) - X_r_hat), axis=-1, keep_dims=True)
+            self.int_rew = tf.reshape(self.int_rew, (self.sy_nenvs, self.sy_nsteps - 1))
+
+            targets = tf.stop_gradient(X_r)
+            # self.aux_loss = tf.reduce_mean(tf.square(noisy_targets-X_r_hat))
+            self.aux_loss = tf.reduce_mean(tf.square(targets - X_r_hat), -1)
+            mask = tf.random_uniform(shape=tf.shape(self.aux_loss), minval=0., maxval=1., dtype=tf.float32)
+            mask = tf.cast(mask < self.proportion_of_exp_used_for_predictor_update, tf.float32)
+            self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
+
+        """
+
+        obs = torch.transpose(torch.transpose(exps.obs.image, 1, 3), 2, 3)
+
+        with torch.no_grad():
+            target = self.acmodel.random_target(obs)
+
+        pred = self.acmodel.predictor_network(obs)
+        diff_pred = (pred - target).pow_(2)
+
+        # -- Calculate intrinsic & Normalize intrinsic rewards
+        int_rew = diff_pred.detach().mean(1)
+
+        dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
+
+        self.predictor_rms.update(int_rew)
+        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
+        dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
+
+        # Optimize intrinsic reward generator
+        loss_pred = diff_pred.mean()
+        self.optimizer_predictor.zero_grad()
+        loss_pred.backward()
+        grad_norm = sum(
+            p.grad.data.norm(2).item() ** 2 for p in self.acmodel.predictor_network.parameters()
+            if p.grad is not None
+        ) ** 0.5
+
+        torch.nn.utils.clip_grad_norm_(self.acmodel.predictor_network.parameters(),
+                                       self.max_grad_norm)
+        self.optimizer_predictor.step()
+
+        # grad_norm = sum(
+        #     p.grad.data.norm(2).item() ** 2 for p in self.acmodel.random_target.parameters()
+        #     if p.grad is not None
+        # ) ** 0.5
+        # print("grad_norm: ", grad_norm.item())
+

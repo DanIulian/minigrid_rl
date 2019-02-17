@@ -178,8 +178,21 @@ class TwoValueHeadsBase(ABC):
             self.log_episode_reshaped_return *= self.mask
             self.log_episode_num_frames *= self.mask
 
-        # Calculate intrinsic return
-        # TODO
+        # ==========================================================================================
+        # Define experiences: ---> for observations
+        #   the whole experience is the concatenation of the experience
+        #   of each process.
+        exps = DictList()
+        exps.obs = [self.obss[i][j]
+                    for j in range(self.num_procs)
+                    for i in range(self.num_frames_per_proc)]
+
+        # Preprocess experiences
+        exps.obs = self.preprocess_obss(exps.obs, device=self.device)
+        # ==========================================================================================
+
+        # -- Calculate intrinsic return
+        self.calculate_intrinsic_reward(exps, self.rewards_int)
 
         # Add advantage and return to experiences
 
@@ -205,7 +218,8 @@ class TwoValueHeadsBase(ABC):
             delta = self.rewards_int[i] + self.discount * next_value_int * next_mask - self.values_int[i]
             self.advantages_int[i] = delta + self.discount * self.gae_lambda * next_advantage_int * next_mask
 
-        # Define experiences:
+        # ==========================================================================================
+        # @ continue Define experiences:
         #   the whole experience is the concatenation of the experience
         #   of each process.
         # In comments below:
@@ -213,10 +227,6 @@ class TwoValueHeadsBase(ABC):
         #   - P is self.num_procs,
         #   - D is the dimensionality.
 
-        exps = DictList()
-        exps.obs = [self.obss[i][j]
-                    for j in range(self.num_procs)
-                    for i in range(self.num_frames_per_proc)]
         if self.acmodel.recurrent:
             # T x P x D -> P x T x D -> (P * T) x D
             exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
@@ -233,10 +243,6 @@ class TwoValueHeadsBase(ABC):
         exps.returnn_ext = exps.value_ext + exps.advantage_ext
         exps.returnn_int = exps.value_int + exps.advantage_int
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
-
-        # Preprocess experiences
-
-        exps.obs = self.preprocess_obss(exps.obs, device=self.device)
 
         # Log some values
 
@@ -262,4 +268,8 @@ class TwoValueHeadsBase(ABC):
 
     @abstractmethod
     def get_save_data(self):
+        raise NotImplemented
+
+    @abstractmethod
+    def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
         raise NotImplemented

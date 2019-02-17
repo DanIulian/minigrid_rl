@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import torch_rl
-import gym
+
 
 from models.utils import initialize_parameters
 
@@ -28,7 +28,7 @@ class RNDModels(nn.Module, torch_rl.RecurrentACModel):
 
     @property
     def memory_size(self):
-        return 2*self.policy_model.memory_size
+        return self.policy_model.memory_size
 
     def forward(self, *args, **kwargs):
         return self.policy_model(*args, **kwargs)
@@ -69,7 +69,8 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
             if memory_type == "LSTM":
                 self.memory_rnn = nn.LSTMCell(crt_size, memory_size)
             else:
-                raise NotImplemented
+                self.memory_rnn = nn.GRUCell(crt_size, memory_size)
+
             crt_size = memory_size
 
         # Define text embedding
@@ -105,7 +106,10 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
 
     @property
     def memory_size(self):
-        return 2*self._memory_size
+        if self.memory_type == "LSTM":
+            return 2*self._memory_size
+        else:
+            return self._memory_size
 
     def forward(self, obs, memory):
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
@@ -114,10 +118,16 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
         x = self.fc1(x)
 
         if self.use_memory:
-            hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
-            hidden = self.memory_rnn(x, hidden)
-            embedding = hidden[0]
-            memory = torch.cat(hidden, dim=1)
+            if self.memory_type == "LSTM":
+                hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
+                hidden = self.memory_rnn(x, hidden)
+                embedding = hidden[0]
+                memory = torch.cat(hidden, dim=1)
+            else:
+                hidden = memory
+                hidden = self.memory_rnn(x, hidden)
+                embedding = hidden
+                memory = hidden
         else:
             embedding = x
 
@@ -173,8 +183,10 @@ class PredictionNetwork(nn.Module):
         )
 
     def forward(self, x):
+        b_size = x.size(0)
+
         x = self.image_conv(x)
-        x = x.view(-1, 16 * 5 * 5)
+        x = x.view(b_size, -1)
 
         x = self.fc1(x)
         x = self.fc2(x)
@@ -205,8 +217,9 @@ class RandomNetwork(nn.Module):
         )
 
     def forward(self, x):
+        b_size = x.size(0)
         x = self.image_conv(x)
-        x = x.view(-1, 16 * 5 * 5)
+        x = x.view(b_size, -1)
 
         x = self.fc1(x)
         return x
