@@ -100,7 +100,6 @@ def run(full_args: Namespace) -> None:
                                                              model_dir,
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img)
-
     # ==============================================================================================
     # Load training status
 
@@ -149,6 +148,8 @@ def run(full_args: Namespace) -> None:
     total_start_time = time.time()
     update = status["update"]
 
+    algo.collect_random_statistics(50)
+
     while num_frames < args.frames:
         # Update model parameters
 
@@ -175,12 +176,12 @@ def run(full_args: Namespace) -> None:
             data += num_frames_per_episode.values()
             header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
             data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"]]
-            data += [logs["grad_norm"]]
+            data += [logs["grad_norm"], logs["value_ext"], logs["value_int"], logs["value_ext_loss"], logs["value_int_loss"]]
 
             logger.info(
                 "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | "
                 "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "
-                "∇ {:.3f}".format(*data))
+                "∇ {:.3f} | VE {:.3f} | VI {:.3f} | veL {:.3f} | viL {:.3f} ".format(*data))
 
             header += ["return_" + key for key in return_per_episode.keys()]
             data += return_per_episode.values()

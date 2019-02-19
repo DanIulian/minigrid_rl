@@ -13,7 +13,7 @@ class TwoValueHeadsBase(ABC):
     """The base class for RL algorithms."""
 
     def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
-                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward):
+                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred):
         """
         Initializes a `BaseAlgo` instance.
 
@@ -46,6 +46,8 @@ class TwoValueHeadsBase(ABC):
         reshape_reward : function
             a function that shapes the reward, takes an
             (observation, action, reward, done) tuple as an input
+        exp_used_pred : float
+            the proportion of experience used for training predictor
         """
 
         # Store parameters
@@ -63,6 +65,7 @@ class TwoValueHeadsBase(ABC):
         self.recurrence = recurrence
         self.preprocess_obss = preprocess_obss or default_preprocess_obss
         self.reshape_reward = reshape_reward
+        self.exp_used_pred = exp_used_pred
 
         # Store helpers values
 
@@ -136,7 +139,6 @@ class TwoValueHeadsBase(ABC):
                 else:
                     dist, value = self.acmodel(preprocessed_obs)
             action = dist.sample()
-
             obs, reward, done, _ = self.env.step(action.cpu().numpy())
 
             # Update experiences values
@@ -182,6 +184,7 @@ class TwoValueHeadsBase(ABC):
         # Define experiences: ---> for observations
         #   the whole experience is the concatenation of the experience
         #   of each process.
+        #import pdb; pdb.set_trace()
         exps = DictList()
         exps.obs = [self.obss[i][j]
                     for j in range(self.num_procs)
@@ -195,7 +198,7 @@ class TwoValueHeadsBase(ABC):
         self.calculate_intrinsic_reward(exps, self.rewards_int)
 
         # Add advantage and return to experiences
-
+        # don;t use end of episode signal for intrinsic rewards
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
             if self.acmodel.recurrent:
@@ -203,6 +206,15 @@ class TwoValueHeadsBase(ABC):
             else:
                 _, next_value = self.acmodel(preprocessed_obs)
 
+        #Calculate intrinsic rewards and advantages
+        for i in reversed(range(self.num_frames_per_proc)):
+            next_value_int = self.values_int[i + 1] if i < self.num_frames_per_proc - 1 else next_value[1]
+            next_advantage_int = self.advantages_int[i + 1] if i < self.num_frames_per_proc - 1 else 0
+
+            delta = self.rewards_int[i] + self.discount * next_value_int - self.values_int[i]
+            self.advantages_int[i] = delta + self.discount * self.gae_lambda * next_advantage_int
+
+        #Calculate extrinisc rewards and advantages
         for i in reversed(range(self.num_frames_per_proc)):
             next_mask = self.masks[i+1] if i < self.num_frames_per_proc - 1 else self.mask
 
@@ -212,11 +224,7 @@ class TwoValueHeadsBase(ABC):
             delta = self.rewards_ext[i] + self.discount * next_value_ext * next_mask - self.values_ext[i]
             self.advantages_ext[i] = delta + self.discount * self.gae_lambda * next_advantage_ext * next_mask
 
-            next_value_int = self.values_int[i+1] if i < self.num_frames_per_proc - 1 else next_value[1]
-            next_advantage_int = self.advantages_int[i+1] if i < self.num_frames_per_proc - 1 else 0
 
-            delta = self.rewards_int[i] + self.discount * next_value_int * next_mask - self.values_int[i]
-            self.advantages_int[i] = delta + self.discount * self.gae_lambda * next_advantage_int * next_mask
 
         # ==========================================================================================
         # @ continue Define experiences:
