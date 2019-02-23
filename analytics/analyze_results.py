@@ -5,19 +5,19 @@ import os
 from pandas.io.json.normalize import nested_to_record
 import yaml
 
-from .utils import get_experiment_files
+from analytics.utils import get_experiment_files
 
 
 # -- Load experiment Data
-experiment_path = "results/2019Feb12-171525_multiple_envs"
+experiment_path = "results/2019Feb19-171448_multiple_envs_rnd/"
 data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
 
 
 df.boxplot(by="run_index", column="FPS", grid=0)
 
-experiments_group = df.groupby("experiment_id")
+experiments_group = df.groupby("experiment_id", sort=False)
 
-size = int(pow(experiments_group.ngroups,1/2))+1
+size = int(pow(experiments_group.ngroups, 1/2))+1
 plt.figure()
 # Iterate through continents
 
@@ -33,7 +33,7 @@ for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
     # ax.set_aspect('equal', adjustable='datalim')
     plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
 
-# plt.subplots_adjust(wspace=0, hspace=0)
+plt.subplots_adjust(wspace=0, hspace=0)
 plt.tight_layout()
 plt.show()
 

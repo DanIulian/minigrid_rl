@@ -174,8 +174,9 @@ def run(full_args: Namespace) -> None:
             data += rreturn_per_episode.values()
             header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
             data += num_frames_per_episode.values()
-            header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
+            header += ["entropy", "value", "policy_loss", "value_loss"]
             data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"]]
+            header += ["grad_norm", "value_ext", "value_int", "value_ext_loss", "value_int_loss"]
             data += [logs["grad_norm"], logs["value_ext"], logs["value_int"], logs["value_ext_loss"], logs["value_int_loss"]]
 
             logger.info(

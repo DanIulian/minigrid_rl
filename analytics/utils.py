@@ -56,7 +56,10 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
 
             file_data = file_path
             if hasattr(pd, str(file_type)) and file_path is not None:
+                # Some bad header for experiments Fix
+                # file_data = getattr(pd, file_type)(file_path, skiprows=1, names=['update', 'frames', 'FPS', 'duration', 'rreturn_mean', 'rreturn_std', 'rreturn_min', 'rreturn_max', 'num_frames_mean', 'num_frames_std', 'num_frames_min', 'num_frames_max', 'entropy', 'value', 'policy_loss', 'value_loss', 'grad_norm', 'value_ext', 'value_int', 'value_ext_loss', 'value_int_loss', 'return_mean', 'return_std', 'return_min', 'return_max'])
                 file_data = getattr(pd, file_type)(file_path)
+    
                 file_data["run_index"] = run_index
 
                 if file_name not in join_dfs:
