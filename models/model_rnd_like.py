@@ -213,7 +213,7 @@ class RandomNetwork(nn.Module):
 
         self.fc1 = nn.Sequential(
             nn.Linear(image_embedding_size, 512),
-            #snn.ReLU(),
+            #nn.ReLU(),
         )
 
     def forward(self, x):

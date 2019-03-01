@@ -6,7 +6,7 @@ main:
   frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
-  tb: false # action="store_true", default=False, help="log into Tensorboard")
+  tb: true # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
   max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
@@ -45,3 +45,4 @@ model:
   memory_type: GRU
   use_memory: true
 
+extra_logs: [[value_ext, vE, 3f], [value_int, vI, 3f], [value_ext_loss, vE_L, 3f]]
