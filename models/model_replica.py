@@ -16,7 +16,9 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         super().__init__()
 
         # CFG Information
-        memory_type = cfg.memory_type
+        self.memory_type = memory_type = cfg.memory_type
+        hidden_size = getattr(cfg, "hidden_size", 128)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
 
         # Decide which components are enabled
         self.use_text = use_text
@@ -33,62 +35,75 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         )
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        self.image_embedding_size = ((n-1)-2)*((m-1)-2)*64
+        self.image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+
+        self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
+
+        crt_size = hidden_size
 
         # Define memory
         if self.use_memory:
-            self.memory_rnn = nn.LSTMCell(self.image_embedding_size, self.semi_memory_size)
+            if memory_type == "LSTM":
+                self.memory_rnn = nn.LSTMCell(crt_size, memory_size)
+            else:
+                self.memory_rnn = nn.GRUCell(crt_size, memory_size)
+
+            crt_size = memory_size
 
         # Define text embedding
         if self.use_text:
             self.word_embedding_size = 32
             self.word_embedding = nn.Embedding(obs_space["text"], self.word_embedding_size)
             self.text_embedding_size = 128
-            self.text_rnn = nn.GRU(self.word_embedding_size, self.text_embedding_size, batch_first=True)
+            self.text_rnn = nn.GRU(self.word_embedding_size, self.text_embedding_size,
+                                   batch_first=True)
 
         # Resize image embedding
-        self.embedding_size = self.semi_memory_size
+        self.embedding_size = crt_size
         if self.use_text:
             self.embedding_size += self.text_embedding_size
 
-        # Define actor's model
-        if isinstance(action_space, gym.spaces.Discrete):
-            self.actor = nn.Sequential(
-                nn.Linear(self.embedding_size, 64),
-                nn.Tanh(),
-                nn.Linear(64, action_space.n)
-            )
-        else:
-            raise ValueError("Unknown action space: " + str(action_space))
-
-        # Define critic's model
-        self.critic = nn.Sequential(
-            nn.Linear(self.embedding_size, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
+        self.fc2_val = nn.Sequential(
+            nn.Linear(self.embedding_size, memory_size),
+            nn.ReLU(),
         )
+
+        self.fc2_act = nn.Sequential(
+            nn.Linear(self.embedding_size, memory_size),
+            nn.ReLU(),
+        )
+
+        # Define heads
+        self.vf = nn.Linear(memory_size, 1)
+        self.pd = nn.Linear(memory_size, action_space.n)
 
         # Initialize parameters correctly
         self.apply(initialize_parameters)
 
     @property
     def memory_size(self):
-        return 2*self.semi_memory_size
-
-    @property
-    def semi_memory_size(self):
-        return self.image_embedding_size
+        if self.memory_type == "LSTM":
+            return 2 * self._memory_size
+        else:
+            return self._memory_size
 
     def forward(self, obs, memory):
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
         x = self.image_conv(x)
         x = x.reshape(x.shape[0], -1)
+        x = self.fc1(x)
 
         if self.use_memory:
-            hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
-            hidden = self.memory_rnn(x, hidden)
-            embedding = hidden[0]
-            memory = torch.cat(hidden, dim=1)
+            if self.memory_type == "LSTM":
+                hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
+                hidden = self.memory_rnn(x, hidden)
+                embedding = hidden[0]
+                memory = torch.cat(hidden, dim=1)
+            else:
+                hidden = memory
+                hidden = self.memory_rnn(x, hidden)
+                embedding = hidden
+                memory = hidden
         else:
             embedding = x
 
@@ -96,13 +111,16 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
             embed_text = self._get_embed_text(obs.text)
             embedding = torch.cat((embedding, embed_text), dim=1)
 
-        x = self.actor(embedding)
-        dist = Categorical(logits=F.log_softmax(x, dim=1))
+        val = self.fc2_val(embedding)
+        act = self.fc2_act(embedding)
 
-        x = self.critic(embedding)
-        value = x.squeeze(1)
+        vpred = self.vf(val).squeeze(1)
 
-        return dist, value, memory
+        pd = self.pd(act)
+
+        dist = Categorical(logits=F.log_softmax(pd, dim=1))
+
+        return dist, vpred, memory
 
     def _get_embed_text(self, text):
         _, hidden = self.text_rnn(self.word_embedding(text))

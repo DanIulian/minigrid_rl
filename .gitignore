@@ -4,6 +4,7 @@ results/
 configs/*
 !configs/**/config*
 !configs/**/default*
+!configs/default.yaml
 
 *__pycache__
 *egg-info
