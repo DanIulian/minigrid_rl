@@ -6,14 +6,14 @@ from analytics.utils import get_experiment_files
 
 
 # -- Load experiment Data
-experiment_path = "results/2019Feb14-164238_openai_rnd/"
+experiment_path = "results/2019Feb19-171448_multiple_envs_rnd/"
 data, cfgs, df = get_experiment_files(experiment_path, files={"progress.csv": "read_csv"})
 
 
 (df.groupby("run_index").time_elapsed.max()/3600)
 
 
-experiments_group = df.groupby("experiment_id")
+experiments_group = df.groupby("experiment_id", sort=False)
 
 size = int(pow(experiments_group.ngroups,1/2))+1
 plt.figure()

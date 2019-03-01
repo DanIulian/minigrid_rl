@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from agents.two_v_base import TwoValueHeadsBase
 from torch_rl.utils import DictList
-from utils.utils import RunningMeanStd
+from utils.utils import RunningMeanStd, RewardForwardFilter
 
 class PPORND(TwoValueHeadsBase):
     """The class for the Proximal Policy Optimization algorithm
@@ -28,10 +28,11 @@ class PPORND(TwoValueHeadsBase):
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
         optimizer = getattr(cfg, "optimizer", "Adam")
+        exp_used_pred = getattr(cfg, "experience used for training predictor", 0.25)
 
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
-            value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward)
+            value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
@@ -47,6 +48,8 @@ class PPORND(TwoValueHeadsBase):
         # Prepare intrinsic generators
         self.acmodel.random_target.eval()
         self.predictor_rms = RunningMeanStd()
+        self.predictor_rff = RewardForwardFilter(gamma=self.discount)
+
 
         self.optimizer_predictor = getattr(torch.optim, optimizer)(
             self.acmodel.predictor_network.parameters(), lr,eps=adam_eps)
@@ -243,8 +246,16 @@ class PPORND(TwoValueHeadsBase):
             self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
 
         """
+        obs = exps.obs.image * 15.0 # horrible harcoded normalized factor
+        #nurmalize the observations for predictor and target networks
+        norm_obs = torch.clamp(
+            torch.div(
+                (obs - self.obs_rms.mean.to(exps.obs.image.device)),
+                torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
+            -5.0, 5.0)
 
-        obs = torch.transpose(torch.transpose(exps.obs.image, 1, 3), 2, 3)
+        self.obs_rms.update(obs.cpu()) # update running mean
+        obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
 
         with torch.no_grad():
             target = self.acmodel.random_target(obs)
@@ -257,12 +268,23 @@ class PPORND(TwoValueHeadsBase):
 
         dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
 
-        self.predictor_rms.update(int_rew)
+        #Normalize intrinsic reward
+        #self.predictor_rff.reset() # do you have to rest it every time ???
+        int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
+
+        for i in reversed(range(self.num_frames_per_proc)):
+            int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
+
+        self.predictor_rms.update(int_rff.view(-1))
         # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
-        # Optimize intrinsic reward generator
-        loss_pred = diff_pred.mean()
+        # Optimize intrinsic reward generator using only a percentage of experiences
+        loss_pred = diff_pred.mean(1)
+        mask = torch.rand(loss_pred.shape[0])
+        mask = (mask < self.exp_used_pred).type(torch.FloatTensor).to(loss_pred.device)
+        loss_pred = (loss_pred * mask).sum() / torch.max(mask.sum(), torch.Tensor([1]).to(loss_pred.device))
+
         self.optimizer_predictor.zero_grad()
         loss_pred.backward()
         grad_norm = sum(
@@ -279,4 +301,35 @@ class PPORND(TwoValueHeadsBase):
         #     if p.grad is not None
         # ) ** 0.5
         # print("grad_norm: ", grad_norm.item())
+
+
+    def collect_random_statistics(self, num_timesteps):
+        #initialize observation normalization with data from random agent
+
+        self.obs_rms = RunningMeanStd(shape=(1, 7, 7, 3))
+
+        curr_obs = self.obs
+        collected_obss = [None] * (self.num_frames_per_proc * num_timesteps)
+        for i in range(self.num_frames_per_proc * num_timesteps):
+            # Do one agent-environment interaction
+
+            action = torch.randint(0, self.env.action_space.n, (self.num_procs,)) #sample uniform actions
+            obs, reward, done, _ = self.env.step(action.cpu().numpy())
+
+            # Update experiences values
+            collected_obss[i] = curr_obs
+            curr_obs = obs
+
+        self.obs = curr_obs
+        exps = DictList()
+        exps.obs = [collected_obss[i][j]
+                    for j in range(self.num_procs)
+                    for i in range(self.num_frames_per_proc * num_timesteps)]
+
+        images = [obs["image"] for obs in exps.obs]
+        images = numpy.array(images)
+        images = torch.tensor(images, dtype=torch.float)
+
+        self.obs_rms.update(images)
+
 

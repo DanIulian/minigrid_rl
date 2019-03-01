@@ -36,6 +36,7 @@ agent:
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   int_coeff: 1.
   ext_coeff: 2.
+  exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
 model:
   name: Model

@@ -179,7 +179,7 @@ class PredictionNetwork(nn.Module):
         )
         self.fc3 = nn.Sequential(
             nn.Linear(512, 512),
-            nn.ReLU(),
+            #nn.ReLU(),
         )
 
     def forward(self, x):
@@ -213,7 +213,7 @@ class RandomNetwork(nn.Module):
 
         self.fc1 = nn.Sequential(
             nn.Linear(image_embedding_size, 512),
-            nn.ReLU(),
+            #snn.ReLU(),
         )
 
     def forward(self, x):

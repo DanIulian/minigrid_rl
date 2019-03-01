@@ -2,13 +2,14 @@ import numpy as np
 import torch
 
 
-class RunningMeanStd(torch.Tensor):
+class RunningMeanStd(object):
     def __init__(self, epsilon=1e-4, shape=(1)):
         self.mean = torch.zeros(shape)
         self.max = torch.FloatTensor([-np.inf])
         self.var = torch.ones(shape)
         self.count = torch.Tensor([epsilon])
         self.epsilon = torch.Tensor([epsilon])
+
 
     def update(self, x):
         if x.size(0) > 1:
@@ -37,6 +38,22 @@ class RunningMeanStd(torch.Tensor):
         self.mean = new_mean
         self.var = new_var
         self.count = new_count
+
+
+class RewardForwardFilter(object):
+    def __init__(self, gamma):
+        self.rewems = None
+        self.gamma = gamma
+
+    def update(self, rews):
+        if self.rewems is None:
+            self.rewems = rews
+        else:
+            self.rewems = self.rewems * self.gamma + rews
+        return self.rewems
+
+    def reset(self):
+        self.rewems = None
 
 
 if __name__ == "__main__":
