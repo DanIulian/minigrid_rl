@@ -13,7 +13,7 @@ def get_training_data_path(model_dir, best=False, index=None):
     if best:
         return os.path.join(model_dir, "training_data_best.pt")
 
-    if index:
+    if index is not None:
         return os.path.join(model_dir, f"training_data_{index}.pt")
 
     return os.path.join(model_dir, "training_data.pt")

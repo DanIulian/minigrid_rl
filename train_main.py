@@ -27,11 +27,38 @@ def post_process_args(args: NameError) -> None:
     args.mem = args.recurrence > 1
 
 
+def extra_log_fields(header: list, log_keys: list) ->list:
+    unusable_fields = ['return_per_episode', 'reshaped_return_per_episode', 'num_frames_per_episode', 'num_frames']
+    extra_fields = []
+    for field in log_keys:
+        if field not in header and field not in unusable_fields:
+            extra_fields.append(field)
+
+    return  extra_fields
+
+def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
+
+    basic_keys_format = \
+        "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | " \
+        "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "\
+        "∇ {:.3f}"
+    printable_data = data[:17]
+
+    if extra_logs:
+        for field in extra_logs:
+            basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
+            printable_data.append(data[header.index(field[0])])
+
+    return basic_keys_format, printable_data
+
+
+
 def run(full_args: Namespace) -> None:
 
     args = full_args.main
     agent_args = full_args.agent
     model_args = full_args.model
+    extra_logs = getattr(full_args, "extra_logs", None)
 
     if args.seed == 0:
         args.seed = full_args.run_id + 1
@@ -102,7 +129,6 @@ def run(full_args: Namespace) -> None:
                                                              normalize=normalize_img)
     # ==============================================================================================
     # Load training status
-
     try:
         status = utils.load_status(model_dir)
     except OSError:
@@ -148,8 +174,6 @@ def run(full_args: Namespace) -> None:
     total_start_time = time.time()
     update = status["update"]
 
-    algo.collect_random_statistics(50)
-
     while num_frames < args.frames:
         # Update model parameters
 
@@ -176,13 +200,17 @@ def run(full_args: Namespace) -> None:
             data += num_frames_per_episode.values()
             header += ["entropy", "value", "policy_loss", "value_loss"]
             data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"]]
-            header += ["grad_norm", "value_ext", "value_int", "value_ext_loss", "value_int_loss"]
-            data += [logs["grad_norm"], logs["value_ext"], logs["value_int"], logs["value_ext_loss"], logs["value_int_loss"]]
+            header += ["grad_norm"]
+            data += [logs["grad_norm"]]
 
-            logger.info(
-                "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | "
-                "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "
-                "∇ {:.3f} | VE {:.3f} | VI {:.3f} | veL {:.3f} | viL {:.3f} ".format(*data))
+            #add log fields that are not in the standard log format (for example value_int)
+            extra_fields = extra_log_fields(header, list(logs.keys()))
+            header.extend(extra_fields)
+            data += [logs[field] for field in extra_fields]
+
+            #print to stdout the standard log fields + filds required in config
+            keys_format, printable_data = print_keys(header, data, extra_logs)
+            logger.info(keys_format.format(*printable_data))
 
             header += ["return_" + key for key in return_per_episode.keys()]
             data += return_per_episode.values()
@@ -212,7 +240,7 @@ def run(full_args: Namespace) -> None:
             utils.save_status(status, model_dir)
 
         if crt_eprew > max_eprews:
-            print("Reached max return 0.9")
+            print("Reached max return 0.93")
             exit()
 
 

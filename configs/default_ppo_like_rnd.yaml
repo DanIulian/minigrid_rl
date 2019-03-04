@@ -6,13 +6,12 @@ main:
   frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
-  tb: false # action="store_true", default=False, help="log into Tensorboard")
+  tb: true # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
   max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
   save_best: true
   save_all: true
-
 
 env_cfg:
   max_episode_steps: 200 # environment steps
@@ -33,10 +32,11 @@ agent:
   clip_eps: 0.1 # type=float, default=0.2, help="clipping epsilon for PPO (default: 0.2)")
   epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
   batch_size: 1024 # type=int, default=256, help="batch size for PPO (default: 256)")
-  recurrence: &recurrence 4 # type=int, default=1, help="number of timesteps gradient is
+  recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   int_coeff: 1.
   ext_coeff: 2.
+  exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
 model:
   name: Model
@@ -44,3 +44,5 @@ model:
   text: *text
   memory_type: GRU
   use_memory: true
+
+extra_logs: [[value_ext, vE, 3f], [value_int, vI, 3f], [value_ext_loss, vE_L, 3f]]

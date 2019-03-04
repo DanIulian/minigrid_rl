@@ -61,6 +61,8 @@ class PPORND(TwoValueHeadsBase):
 
         self.batch_num = 0
 
+        self.collect_random_statistics(50)
+
     def update_parameters(self):
         # Collect experiences
 
