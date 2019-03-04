@@ -1,12 +1,12 @@
 main:
-  env: MiniGrid-ObstructedMaze-1Dl-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-Empty-6x6-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 32 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 3 # type=int, default=16, help="number of processes (default: 16)")
   frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
-  tb: false # action="store_true", default=False, help="log into Tensorboard")
+  tb: true # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
   max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
@@ -31,12 +31,12 @@ agent:
   optim_alpha: 0.99 # type=float, default=0.99, help="RMSprop optimizer apha (default: 0.99)")
   clip_eps: 0.1 # type=float, default=0.2, help="clipping epsilon for PPO (default: 0.2)")
   epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
-  batch_size: 256 # type=int, default=256, help="batch size for PPO (default: 256)")
+  batch_size: 1024 # type=int, default=256, help="batch size for PPO (default: 256)")
   recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
   min_mem: &min_mem 0  # If min number of recurrence to use mem
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   int_coeff: 1.
-  ext_coeff: 0.
+  ext_coeff: 2.
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
 model:
@@ -47,3 +47,4 @@ model:
   memory_type: GRU
   use_memory: true
 
+extra_logs: [[value_ext, vE, 3f], [value_int, vI, 3f], [value_ext_loss, vE_L, 3f]]

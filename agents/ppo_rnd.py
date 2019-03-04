@@ -28,7 +28,8 @@ class PPORND(TwoValueHeadsBase):
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
         optimizer = getattr(cfg, "optimizer", "Adam")
-        exp_used_pred = getattr(cfg, "experience used for training predictor", 0.25)
+        exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
+        self.running_norm_obs = getattr(cfg, "running_norm_obs", True)
 
         self.nminibatches = getattr(cfg, "nminibatches", 4)
 
@@ -52,7 +53,6 @@ class PPORND(TwoValueHeadsBase):
         self.predictor_rms = RunningMeanStd()
         self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
-
         self.optimizer_predictor = getattr(torch.optim, optimizer)(
             self.acmodel.predictor_network.parameters(), lr,eps=adam_eps)
 
@@ -62,6 +62,9 @@ class PPORND(TwoValueHeadsBase):
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
         self.batch_num = 0
+
+        if self.running_norm_obs:
+            self.collect_random_statistics(50)
 
     def update_parameters(self):
         # Collect experiences
@@ -258,89 +261,8 @@ class PPORND(TwoValueHeadsBase):
             "predictor_rms": self.predictor_rms,
         })
 
-    def calculate_intrinsic_reward_old(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
-
-        """
-        replicate (should normalize by a running mean):
-            X_r -- random target
-            X_r_hat -- predictor
-
-            self.feat_var = tf.reduce_mean(tf.nn.moments(X_r, axes=[0])[1])
-            self.max_feat = tf.reduce_max(tf.abs(X_r))
-            self.int_rew = tf.reduce_mean(tf.square(tf.stop_gradient(X_r) - X_r_hat), axis=-1, keep_dims=True)
-            self.int_rew = tf.reshape(self.int_rew, (self.sy_nenvs, self.sy_nsteps - 1))
-
-            targets = tf.stop_gradient(X_r)
-            # self.aux_loss = tf.reduce_mean(tf.square(noisy_targets-X_r_hat))
-            self.aux_loss = tf.reduce_mean(tf.square(targets - X_r_hat), -1)
-            mask = tf.random_uniform(shape=tf.shape(self.aux_loss), minval=0., maxval=1., dtype=tf.float32)
-            mask = tf.cast(mask < self.proportion_of_exp_used_for_predictor_update, tf.float32)
-            self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
-
-        """
-        # obs = exps.obs.image * 15.0 # horrible harcoded normalized factor
-        # #nurmalize the observations for predictor and target networks
-        # norm_obs = torch.clamp(
-        #     torch.div(
-        #         (obs - self.obs_rms.mean.to(exps.obs.image.device)),
-        #         torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
-        #     -5.0, 5.0)
-        #
-        # self.obs_rms.update(obs.cpu()) # update running mean
-
-        # Without norm
-        norm_obs = exps.obs.image
-
-        obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
-
-        with torch.no_grad():
-            target = self.acmodel.random_target(obs)
-
-        pred = self.acmodel.predictor_network(obs)
-        diff_pred = (pred - target).pow_(2)
-
-        # -- Calculate intrinsic & Normalize intrinsic rewards
-        int_rew = diff_pred.detach().mean(1)
-
-        dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
-
-        #Normalize intrinsic reward
-        #self.predictor_rff.reset() # do you have to rest it every time ???
-        int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
-
-        for i in reversed(range(self.num_frames_per_proc)):
-            int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
-
-        self.predictor_rms.update(int_rff.view(-1))
-        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
-        dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
-
-        # Optimize intrinsic reward generator using only a percentage of experiences
-        loss_pred = diff_pred.mean(1)
-        mask = torch.rand(loss_pred.shape[0])
-        mask = (mask < self.exp_used_pred).type(torch.FloatTensor).to(loss_pred.device)
-        loss_pred = (loss_pred * mask).sum() / torch.max(mask.sum(), torch.Tensor([1]).to(loss_pred.device))
-
-        self.optimizer_predictor.zero_grad()
-        loss_pred.backward()
-        grad_norm = sum(
-            p.grad.data.norm(2).item() ** 2 for p in self.acmodel.predictor_network.parameters()
-            if p.grad is not None
-        ) ** 0.5
-
-        torch.nn.utils.clip_grad_norm_(self.acmodel.predictor_network.parameters(),
-                                       self.max_grad_norm)
-        self.optimizer_predictor.step()
-
-        # grad_norm = sum(
-        #     p.grad.data.norm(2).item() ** 2 for p in self.acmodel.random_target.parameters()
-        #     if p.grad is not None
-        # ) ** 0.5
-        # print("grad_norm: ", grad_norm.item())
-
-
     def collect_random_statistics(self, num_timesteps):
-        #initialize observation normalization with data from random agent
+        #  initialize observation normalization with data from random agent
 
         self.obs_rms = RunningMeanStd(shape=(1, 7, 7, 3))
 
@@ -349,7 +271,7 @@ class PPORND(TwoValueHeadsBase):
         for i in range(self.num_frames_per_proc * num_timesteps):
             # Do one agent-environment interaction
 
-            action = torch.randint(0, self.env.action_space.n, (self.num_procs,)) #sample uniform actions
+            action = torch.randint(0, self.env.action_space.n, (self.num_procs,))  # sample uniform actions
             obs, reward, done, _ = self.env.step(action.cpu().numpy())
 
             # Update experiences values
@@ -388,18 +310,19 @@ class PPORND(TwoValueHeadsBase):
             self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
 
         """
-        # obs = exps.obs.image * 15.0 # horrible harcoded normalized factor
-        # #nurmalize the observations for predictor and target networks
-        # norm_obs = torch.clamp(
-        #     torch.div(
-        #         (obs - self.obs_rms.mean.to(exps.obs.image.device)),
-        #         torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
-        #     -5.0, 5.0)
-        #
-        # self.obs_rms.update(obs.cpu()) # update running mean
+        if self.running_norm_obs:
+            obs = exps.obs.image * 15.0  # horrible harcoded normalized factor
+            # nurmalize the observations for predictor and target networks
+            norm_obs = torch.clamp(
+                torch.div(
+                    (obs - self.obs_rms.mean.to(exps.obs.image.device)),
+                    torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
+                -5.0, 5.0)
 
-        # Without norm
-        norm_obs = exps.obs.image
+            self.obs_rms.update(obs.cpu())  # update running mean
+        else:
+            # Without norm
+            norm_obs = exps.obs.image
 
         obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
 
@@ -414,8 +337,8 @@ class PPORND(TwoValueHeadsBase):
 
         dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
 
-        #Normalize intrinsic reward
-        #self.predictor_rff.reset() # do you have to rest it every time ???
+        # Normalize intrinsic reward
+        # self.predictor_rff.reset() # do you have to rest it every time ???
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
 
         for i in reversed(range(self.num_frames_per_proc)):

@@ -81,3 +81,42 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
             print(f"Cannot merge {join_df_name}")
 
     return data, cfgs, merge_dfs
+
+
+def move_right(x, y):
+    return x+1, y
+
+
+def move_down(x, y):
+    return x, y-1
+
+
+def move_left(x, y):
+    return x-1, y
+
+
+def move_up(x, y):
+    return x, y+1
+
+
+def gen_spiral(no_points):
+    moves = [move_right, move_down, move_left, move_up]
+    from itertools import cycle
+    _moves = cycle(moves)
+    n = 1
+    pos = 0, 0
+    times_to_move = 1
+
+    yield pos
+
+    while True:
+        for _ in range(2):
+            move = next(_moves)
+            for _ in range(times_to_move):
+                if n >= no_points:
+                    return
+                pos = move(*pos)
+                n += 1
+                yield pos
+
+        times_to_move += 1

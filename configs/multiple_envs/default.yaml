@@ -13,6 +13,7 @@ main:
   save_best: true
   save_all: true
 
+
 env_cfg:
   max_episode_steps: 200 # environment steps
   max_image_value: 15.
@@ -43,4 +44,3 @@ model:
   text: *text
   memory_type: GRU
   use_memory: true
-

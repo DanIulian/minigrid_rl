@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import pandas as pd
 import glob
@@ -9,7 +11,7 @@ from analytics.utils import get_experiment_files
 
 
 # -- Load experiment Data
-experiment_path = "results/2019Feb19-171448_multiple_envs_rnd/"
+experiment_path = "results/2019Mar01-1_multiple_envs/"
 data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
 
 
