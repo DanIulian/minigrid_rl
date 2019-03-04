@@ -4,7 +4,8 @@ main:
   gamma_ext: 0.999
   max_eprews: 0.93
   num-timesteps: 5.e+6
-  max_episode_steps: 400
+  max_episode_steps: 200
   int_coeff: 1.0
-  ext_coeff: 0.
+  ext_coeff: 2.
   proportion_of_exp_used_for_predictor_update: 0.25
+  nminibatches: 16

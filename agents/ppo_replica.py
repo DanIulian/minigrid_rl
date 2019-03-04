@@ -51,7 +51,7 @@ class PPO(BaseAlgov2):
 
         exps, logs = self.collect_experiences()
 
-        for _ in range(self.epochs):
+        for epoch_no in range(self.epochs):
             # Initialize log values
 
             log_entropies = []
