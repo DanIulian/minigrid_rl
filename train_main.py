@@ -12,6 +12,7 @@ import torch_rl
 import sys
 from liftoff.config import read_config
 from argparse import Namespace
+import numpy as np
 
 try:
     import gym_minigrid
@@ -50,7 +51,6 @@ def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
             printable_data.append(data[header.index(field[0])])
 
     return basic_keys_format, printable_data
-
 
 
 def run(full_args: Namespace) -> None:
@@ -95,7 +95,7 @@ def run(full_args: Namespace) -> None:
 
     envs = []
 
-    actual_procs =  getattr(args, "actual_procs", None)
+    actual_procs = getattr(args, "actual_procs", None)
     if actual_procs:
         # Split envs in chunks
         env = gym.make(args.env)
@@ -103,14 +103,16 @@ def run(full_args: Namespace) -> None:
 
         env.seed(args.seed + 10000 * 0)
         envs.append([env])
-        for env_i in range(1, args.procs, actual_procs):
+        chunk_size = int(np.ceil((args.procs - 1) / float(actual_procs)))
+        for env_i in range(1, args.procs, chunk_size):
             env_chunk = []
-            for i in range(env_i, min(env_i+actual_procs, args.procs)):
+            for i in range(env_i, min(env_i+chunk_size, args.procs)):
                 env = gym.make(args.env)
                 env.seed(args.seed + 10000 * i)
                 env_chunk.append(env)
             envs.append(env_chunk)
         first_env = envs[0][0]
+        print(f"NO of envs / proc: {chunk_size}; No of processes {len(envs[1:])} + Master")
     else:
         for i in range(args.procs):
             env = gym.make(args.env)
@@ -255,17 +257,17 @@ def main() -> None:
     if not hasattr(full_args, "run_id"):
         full_args.run_id = 0
 
-    if hasattr(args, "model_dir"):
-        # Define run dir
-        os.environ["TORCH_RL_STORAGE"] = "results_dir"
+    # Define run dir
+    os.environ["TORCH_RL_STORAGE"] = "results_dir"
 
-        suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
-        default_model_name = "{}_{}_seed{}_{}".format(args.env, args.algo, args.seed, suffix)
-        model_name = args.model or default_model_name
-        model_dir = utils.get_model_dir(model_name)
+    suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
+    default_model_name = "{}_{}_seed{}_{}".format(args.env, full_args.agent.name, args.seed, suffix)
+    model_name = full_args.model.name or default_model_name
+    model_dir = utils.get_model_dir(model_name)
 
-        full_args.out_dir = model_dir
-        args.model_dir = model_dir
+    full_args.out_dir = model_dir
+    full_args.model_dir = model_dir
+    args.model_dir = model_dir
 
     run(full_args)
 

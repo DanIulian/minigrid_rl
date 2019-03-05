@@ -6,10 +6,10 @@ cd ../
 git clone https://github.com/maximecb/gym-minigrid.git
 cd gym-minigrid
 pip install -e .
-cd ../
+# cd ../
 # git clone https://github.com/lcswillems/torch-rl.git
 # cd torch-rl
-# cd ../
+cd ../
 git clone https://github.com/tudor-berariu/liftoff.git
 cd liftoff/
 pip install -e . --process-dependency-links
