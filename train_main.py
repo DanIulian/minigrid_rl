@@ -14,6 +14,7 @@ from liftoff.config import read_config
 from argparse import Namespace
 import numpy as np
 
+
 try:
     import gym_minigrid
 except ImportError:
@@ -22,6 +23,7 @@ except ImportError:
 import utils
 from models import get_model
 from agents import get_agent
+from utils import gym_wrappers
 
 
 def post_process_args(args: NameError) -> None:
@@ -35,7 +37,8 @@ def extra_log_fields(header: list, log_keys: list) ->list:
         if field not in header and field not in unusable_fields:
             extra_fields.append(field)
 
-    return  extra_fields
+    return extra_fields
+
 
 def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
 
@@ -95,10 +98,19 @@ def run(full_args: Namespace) -> None:
 
     envs = []
 
+    wrapper_method = getattr(full_args.env_cfg, "wrapper", None)
+    if wrapper_method is None:
+        def idem(x):
+            return x
+        env_wrapper = idem
+    else:
+        env_wrapper = getattr(gym_wrappers, wrapper_method)
+
     actual_procs = getattr(args, "actual_procs", None)
+
     if actual_procs:
         # Split envs in chunks
-        env = gym.make(args.env)
+        env = env_wrapper(gym.make(args.env))
         env.max_steps = full_args.env_cfg.max_episode_steps
 
         env.seed(args.seed + 10000 * 0)
@@ -107,7 +119,7 @@ def run(full_args: Namespace) -> None:
         for env_i in range(1, args.procs, chunk_size):
             env_chunk = []
             for i in range(env_i, min(env_i+chunk_size, args.procs)):
-                env = gym.make(args.env)
+                env = env_wrapper(gym.make(args.env))
                 env.seed(args.seed + 10000 * i)
                 env_chunk.append(env)
             envs.append(env_chunk)
@@ -115,7 +127,7 @@ def run(full_args: Namespace) -> None:
         print(f"NO of envs / proc: {chunk_size}; No of processes {len(envs[1:])} + Master")
     else:
         for i in range(args.procs):
-            env = gym.make(args.env)
+            env = env_wrapper(gym.make(args.env))
             env.max_steps = full_args.env_cfg.max_episode_steps
 
             env.seed(args.seed + 10000 * i)

@@ -11,6 +11,10 @@ except ImportError:
     pass
 
 
+def include_full_state(env):
+    return RecordFullState(env)
+
+
 class RecordingBehaviour(Wrapper):
     '''
     When finished collecting information call get_behaviour()
@@ -72,7 +76,28 @@ class RecordingBehaviour(Wrapper):
         }
 
 
+class RecordFullState(Wrapper):
+    def __init__(self, env):
+        super(RecordFullState, self).__init__(env)
 
+    def step(self, action):
+
+        observation, reward, done, info = self.env.step(action)
+
+        full_states = self.env.grid.encode().transpose(1, 0, 2)
+        observation["state"] = full_states
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        full_states = self.env.grid.encode().transpose(1, 0, 2)
+        obs["state"] = full_states
+
+        return obs
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
 
 from optparse import OptionParser
 import time
@@ -149,6 +174,7 @@ def main():
         # If the window was closed
         if renderer.window == None:
             break
+
 
 if __name__ == "__main__":
     main()

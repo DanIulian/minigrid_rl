@@ -1,9 +1,11 @@
 from . import model_rnd_like
 from . import model_replica
+from . import model_worlds
 
 MODELS = {
     "RNDModel": model_rnd_like.RNDModels,
     "Model": model_replica.Model,
+    "WorldsModels": model_worlds.WorldsModels,
 }
 
 
