@@ -13,7 +13,7 @@ class PPO(BaseAlgov2):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
-    def __init__(self, cfg, envs, acmodel, agent_data, preprocess_obss=None, reshape_reward=None):
+    def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
         num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         lr = getattr(cfg, "lr", 7e-4)
@@ -27,6 +27,8 @@ class PPO(BaseAlgov2):
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
         optimizer = getattr(cfg, "optimizer", "Adam")
+        preprocess_obss = kwargs.get("preprocess_obss", None)
+        reshape_reward = kwargs.get("reshape_reward", None)
 
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,

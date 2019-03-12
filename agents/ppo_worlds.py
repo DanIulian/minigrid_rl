@@ -2,21 +2,20 @@
     inspired from https://github.com/lcswillems/torch-rl
 """
 
-import numpy
+import numpy as np
 import torch
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 from utils.format import preprocess_images
-import torch_rl
 
 
 class PPOWorlds(TwoValueHeadsBaseGeneral):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
-    def __init__(self, cfg, envs, acmodel, agent_data, preprocess_obss=None, reshape_reward=None):
+    def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
         num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         lr = getattr(cfg, "lr", 7e-4)
@@ -31,12 +30,14 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         batch_size = getattr(cfg, "batch_size", 256)
         optimizer = getattr(cfg, "optimizer", "Adam")
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
+        preprocess_obss = kwargs.get("preprocess_obss", None)
+        reshape_reward = kwargs.get("reshape_reward", None)
+        eval_envs = kwargs.get("eval_envs", [])
 
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
-
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
-
         self.nminibatches = getattr(cfg, "nminibatches", 4)
+        self.out_dir = getattr(cfg, "out_dir", None)
 
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
@@ -73,9 +74,35 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
         self.batch_num = 0
+        self.updates_cnt = 0
 
         if self.running_norm_obs:
             self.collect_random_statistics(50)
+
+        # -- Init evaluator envs
+        self.eval_envs = None
+        self.eval_memory = None
+        self.eval_mask = None
+        self.eval_env_memory = None
+
+        if len(eval_envs) > 0:
+            self.eval_envs = self.init_evaluator(eval_envs)
+
+    def init_evaluator(self, envs):
+        from torch_rl.utils import ParallelEnv
+        device = self.device
+        acmodel = self.acmodel
+
+        eval_envs = ParallelEnv(envs)
+        obs = eval_envs.reset()
+
+        if self.acmodel.recurrent:
+            self.eval_memory = torch.zeros(len(obs), acmodel.memory_size, device=device)
+            self.eval_env_memory = torch.zeros(len(obs), acmodel.envworld_network.memory_size,
+                                               device=device)
+            self.eval_mask = torch.ones(len(obs), device=device)
+
+        return eval_envs
 
     def update_parameters(self):
         # Collect experiences
@@ -356,18 +383,20 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         # Log some values
 
-        logs["entropy"] = numpy.mean(log_entropies)
-        logs["value_ext"] = numpy.mean(log_values_ext)
-        logs["value_int"] = numpy.mean(log_values_int)
+        logs["entropy"] = np.mean(log_entropies)
+        logs["value_ext"] = np.mean(log_values_ext)
+        logs["value_int"] = np.mean(log_values_int)
         logs["value"] = logs["value_ext"] + logs["value_int"]
-        logs["policy_loss"] = numpy.mean(log_policy_losses)
-        logs["value_ext_loss"] = numpy.mean(log_value_ext_losses)
-        logs["value_int_loss"] = numpy.mean(log_value_int_losses)
+        logs["policy_loss"] = np.mean(log_policy_losses)
+        logs["value_ext_loss"] = np.mean(log_value_ext_losses)
+        logs["value_int_loss"] = np.mean(log_value_int_losses)
         logs["value_loss"] = logs["value_int_loss"] + logs["value_ext_loss"]
-        logs["grad_norm"] = numpy.mean(log_grad_norms)
+        logs["grad_norm"] = np.mean(log_grad_norms)
 
-        logs["envworld_loss"] = numpy.mean(log_envworld_loss)
-        logs["evaluator_loss"] = numpy.mean(log_evaluator_loss)
+        logs["envworld_loss"] = np.mean(log_envworld_loss)
+        logs["evaluator_loss"] = np.mean(log_evaluator_loss)
+
+        self.updates_cnt += 1
 
         return logs
 
@@ -387,14 +416,16 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         if recurrence is None:
             recurrence = self.recurrence
 
-        indexes = numpy.arange(0, self.num_frames, recurrence)
-        indexes = numpy.random.permutation(indexes)
+        indexes = np.arange(0, self.num_frames, recurrence)
+        indexes = np.random.permutation(indexes)
 
         # Shift starting indexes by recurrence//2 half the time
-        if self.batch_num % 2 == 1:
-            indexes = indexes[(indexes + recurrence) % self.num_frames_per_proc != 0]
-            indexes += recurrence // 2
-        self.batch_num += 1
+        # TODO Check this ; Bad fix
+        if recurrence is None:
+            if self.batch_num % 2 == 1:
+                indexes = indexes[(indexes + recurrence) % self.num_frames_per_proc != 0]
+                indexes += recurrence // 2
+            self.batch_num += 1
 
         num_indexes = self.batch_size // recurrence
         batches_starting_indexes = [indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)]
@@ -432,7 +463,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     for i in range(self.num_frames_per_proc * num_timesteps)]
 
         images = [obs["image"] for obs in exps.obs]
-        images = numpy.array(images)
+        images = np.array(images)
         images = torch.tensor(images, dtype=torch.float)
 
         self.obs_rms.update(images)
@@ -461,7 +492,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         if self.running_norm_obs:
             obs = exps.obs.image * 15.0  # horrible harcoded normalized factor
-            # nurmalize the observations for predictor and target networks
+            # normalize the observations for predictor and target networks
             norm_obs = torch.clamp(
                 torch.div(
                     (obs - self.obs_rms.mean.to(exps.obs.image.device)),
@@ -505,6 +536,60 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         exps.states = preprocess_images(full_states, device=self.device)
 
+    def evaluate(self):
+        out_dir = self.out_dir
+        env = self.eval_envs
+        preprocess_obss = self.preprocess_obss
+        device = self.device
+        recurrent = self.acmodel.recurrent
+        acmodel = self.acmodel
+        evaluator_network = self.acmodel.evaluator_network
+        envworld_network = self.acmodel.envworld_network
+        updates_cnt = self.updates_cnt
+
+
+        obs = env.reset()
+        if recurrent:
+            memory = self.eval_memory
+            mask = self.eval_mask
+            envworld_mem = self.eval_env_memory
+
+        prev_actions = torch.zeros((len(obs), env.action_space.n), device=device)
+        crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
+
+        transitions = []
+        for i in range(200):
+            preprocessed_obs = preprocess_obss(obs, device=device)
+            obs_batch = torch.transpose(torch.transpose(preprocessed_obs.image, 1, 3), 2, 3)
+
+            with torch.no_grad():
+                if recurrent:
+                    dist, value, memory = acmodel(preprocessed_obs, memory * mask.unsqueeze(1))
+                else:
+                    dist, value = acmodel(preprocessed_obs)
+
+                action = dist.sample()
+                crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)
+
+                obs_predic, envworld_mem = envworld_network(obs_batch,
+                                                            envworld_mem * mask.unsqueeze(1),
+                                                            prev_actions, crt_actions)
+
+                pred_full_state = evaluator_network(envworld_mem.detach())
+
+            next_obs, reward, done, _ = env.step(action.cpu().numpy())
+
+            prev_actions.copy_(crt_actions)
+
+            transitions.append((obs, action, reward, done, next_obs, dist.probs.cpu(),
+                                pred_full_state.cpu()))
+
+            obs = next_obs
+
+        if out_dir is not None:
+            np.save(f"{out_dir}/eval_{updates_cnt}", transitions)
+
+        return None
 
 
 

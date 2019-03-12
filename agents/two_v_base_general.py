@@ -288,3 +288,7 @@ class TwoValueHeadsBaseGeneral(ABC):
 
     def add_extra_experience(self, exps: DictList):
         return
+
+    def evaluate(self):
+        return None
+

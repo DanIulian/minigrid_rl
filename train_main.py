@@ -49,6 +49,29 @@ def extra_log_fields(header: list, log_keys: list) ->list:
     return extra_fields
 
 
+def get_envs(full_args, env_wrapper, no_envs):
+    envs = []
+    args = full_args.main
+    actual_procs = args.actual_procs
+    add_to_cfg(full_args, MAIN_CFG_ARGS, "out_dir", full_args.out_dir)
+
+    env = env_wrapper(gym.make(args.env))
+    env.max_steps = full_args.env_cfg.max_episode_steps
+
+    env.seed(args.seed + 10000 * 0)
+    envs.append([env])
+    chunk_size = int(np.ceil((no_envs - 1) / float(actual_procs)))
+    for env_i in range(1, no_envs, chunk_size):
+        env_chunk = []
+        for i in range(env_i, min(env_i + chunk_size, no_envs)):
+            env = env_wrapper(gym.make(args.env))
+            env.seed(args.seed + 10000 * i)
+            env_chunk.append(env)
+        envs.append(env_chunk)
+
+    return envs, chunk_size
+
+
 def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
 
     basic_keys_format = \
@@ -107,6 +130,7 @@ def run(full_args: Namespace) -> None:
 
     envs = []
 
+    # Get env wrapper
     wrapper_method = getattr(full_args.env_cfg, "wrapper", None)
     if wrapper_method is None:
         def idem(x):
@@ -119,19 +143,8 @@ def run(full_args: Namespace) -> None:
 
     if actual_procs:
         # Split envs in chunks
-        env = env_wrapper(gym.make(args.env))
-        env.max_steps = full_args.env_cfg.max_episode_steps
-
-        env.seed(args.seed + 10000 * 0)
-        envs.append([env])
-        chunk_size = int(np.ceil((args.procs - 1) / float(actual_procs)))
-        for env_i in range(1, args.procs, chunk_size):
-            env_chunk = []
-            for i in range(env_i, min(env_i+chunk_size, args.procs)):
-                env = env_wrapper(gym.make(args.env))
-                env.seed(args.seed + 10000 * i)
-                env_chunk.append(env)
-            envs.append(env_chunk)
+        no_envs = args.procs
+        envs, chunk_size = get_envs(full_args, env_wrapper, no_envs)
         first_env = envs[0][0]
         print(f"NO of envs / proc: {chunk_size}; No of processes {len(envs[1:])} + Master")
     else:
@@ -142,6 +155,12 @@ def run(full_args: Namespace) -> None:
             env.seed(args.seed + 10000 * i)
             envs.append(env)
         first_env = envs[0]
+
+    # Generate evaluation envs
+    eval_envs = []
+    if full_args.env_cfg.no_eval_envs > 0:
+        no_envs = full_args.env_cfg.no_eval_envs
+        eval_envs, chunk_size = get_envs(full_args, env_wrapper, no_envs)
 
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
@@ -191,7 +210,9 @@ def run(full_args: Namespace) -> None:
     # Load Agent
 
     algo = get_agent(full_args.agent, envs, model, agent_data,
-                     preprocess_obss=preprocess_obss, reshape_reward=None)
+                     preprocess_obss=preprocess_obss, reshape_reward=None, eval_envs=eval_envs)
+
+    has_evaluator = hasattr(algo, "evaluate") and full_args.env_cfg.no_eval_envs > 0
 
     # ==============================================================================================
     # Train model
@@ -213,6 +234,9 @@ def run(full_args: Namespace) -> None:
         num_frames += logs["num_frames"]
         update += 1
 
+        if update % args.eval_interval == 0 and has_evaluator:
+            algo.evaluate()
+
         # Print logs
         if update % args.log_interval == 0:
             fps = logs["num_frames"] / (update_end_time - update_start_time)
@@ -232,12 +256,12 @@ def run(full_args: Namespace) -> None:
             header += ["grad_norm"]
             data += [logs["grad_norm"]]
 
-            #add log fields that are not in the standard log format (for example value_int)
+            # add log fields that are not in the standard log format (for example value_int)
             extra_fields = extra_log_fields(header, list(logs.keys()))
             header.extend(extra_fields)
             data += [logs[field] for field in extra_fields]
 
-            #print to stdout the standard log fields + filds required in config
+            # print to stdout the standard log fields + filds required in config
             keys_format, printable_data = print_keys(header, data, extra_logs)
             logger.info(keys_format.format(*printable_data))
 

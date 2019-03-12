@@ -14,7 +14,7 @@ class PPORND(TwoValueHeadsBase):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
-    def __init__(self, cfg, envs, acmodel, agent_data, preprocess_obss=None, reshape_reward=None):
+    def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
         num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         lr = getattr(cfg, "lr", 7e-4)
@@ -29,6 +29,9 @@ class PPORND(TwoValueHeadsBase):
         batch_size = getattr(cfg, "batch_size", 256)
         optimizer = getattr(cfg, "optimizer", "Adam")
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
+        preprocess_obss = kwargs.get("preprocess_obss", None)
+        reshape_reward = kwargs.get("reshape_reward", None)
+
         self.running_norm_obs = getattr(cfg, "running_norm_obs", True)
 
         self.nminibatches = getattr(cfg, "nminibatches", 4)
