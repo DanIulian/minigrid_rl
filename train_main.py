@@ -13,6 +13,7 @@ import sys
 from liftoff.config import read_config
 from argparse import Namespace
 import numpy as np
+from typing import List
 
 
 try:
@@ -24,6 +25,14 @@ import utils
 from models import get_model
 from agents import get_agent
 from utils import gym_wrappers
+
+MAIN_CFG_ARGS = ["main", "env_cfg", "agent", "model"]
+
+
+def add_to_cfg(cfg: Namespace, subgroups: List[str], new_arg: str, new_arg_value) -> None:
+    for arg in subgroups:
+        if hasattr(cfg, arg):
+            setattr(getattr(cfg, arg), new_arg, new_arg_value)
 
 
 def post_process_args(args: NameError) -> None:
@@ -141,6 +150,12 @@ def run(full_args: Namespace) -> None:
                                                              model_dir,
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img)
+
+    full_state_size = first_env.reset()["state"].shape
+
+    # Add full size shape
+    add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
+
     # ==============================================================================================
     # Load training status
     try:

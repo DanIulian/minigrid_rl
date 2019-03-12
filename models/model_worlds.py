@@ -228,7 +228,8 @@ class EvaluationNet(nn.Module):
         super(EvaluationNet, self).__init__()
 
         hidden_size = getattr(cfg, "hidden_size", 256)
-        self.out_space = torch.Size(out_space)
+
+        self.out_space = torch.Size([out_space[2], *out_space[:2]])
         out_space = np.prod(out_space)
 
         self.fc1 = nn.Sequential(
@@ -243,7 +244,7 @@ class EvaluationNet(nn.Module):
 
         x = self.fc1(x)
 
-        return x.view(self.out_space)
+        return x.view(b_size, *self.out_space)
 
 
 class AgentWorld(nn.Module):
