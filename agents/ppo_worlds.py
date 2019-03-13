@@ -412,7 +412,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             evaluator_batch_loss = 0
 
             # TODO not all recurrence is done ?! Must need next state + obs
-            for i in range(recurrence_worlds - 1):
+            for i in range(recurrence_worlds):
                 sb = exps[inds + i]
                 obs = eobs[inds + i].detach()
                 crt_full_state = estates[inds + i].detach()
@@ -439,19 +439,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
                 new_agworld_mem[i] = agworld_mem
 
-            # -- Last pass for step recurrence_worlds
-            i = recurrence_worlds - 1
-
-            sb = exps[inds + i]
-            obs = eobs[inds + i].detach()
-            prev_actions_one = eactions_onehot[inds + i - 1].detach()
-            crt_actions = eactions_onehot[inds + i].detach()
-
-            _, new_agworld_mem[i], new_agworld_emb[i] = \
-                agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
-
             # Go back and predict action given embeddint(t) & embedding (t+1)
-            for i in range(recurrence_worlds - 1):
+            for i in range(recurrence_worlds-1):
                 # prev_actions = eactions[inds + i].detach()
                 crt_actions = eactions[inds + i].detach()
 
