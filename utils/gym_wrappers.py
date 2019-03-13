@@ -84,20 +84,27 @@ class RecordFullState(Wrapper):
 
         observation, reward, done, info = self.env.step(action)
 
-        full_states = self.env.grid.encode().transpose(1, 0, 2)
-        observation["state"] = full_states
+        observation["state"] = self.get_full_state()
 
         return observation, reward, done, info
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
-        full_states = self.env.grid.encode().transpose(1, 0, 2)
-        obs["state"] = full_states
+
+        obs["state"] = self.get_full_state()
 
         return obs
 
+    def get_full_state(self):
+        full_grid = self.env.grid.encode()
+        full_grid[self.env.agent_pos[0]][self.env.agent_pos[1]] = np.array(
+            [15, self.env.agent_dir, 0])
+        full_grid = full_grid.transpose(1, 0, 2)
+        return full_grid
+
     def seed(self, seed=None):
         self.env.seed(seed=seed)
+
 
 from optparse import OptionParser
 import time

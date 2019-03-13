@@ -343,6 +343,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                                                             prev_actions, crt_actions)
                 envworld_batch_loss += loss_m_world(obs_predic, next_obs.detach())
 
+                # TODO Update memories for next epoch
                 # # Update memories for next epoch
                 # if self.acmodel.recurrent and i < self.recurrence - 1:
                 #     exps.memory[inds + i + 1] = memory.detach()
@@ -582,12 +583,15 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             prev_actions.copy_(crt_actions)
 
             transitions.append((obs, action, reward, done, next_obs, dist.probs.cpu(),
-                                pred_full_state.cpu()))
+                                pred_full_state.cpu(), obs_predic.cpu()))
 
             obs = next_obs
 
         if out_dir is not None:
-            np.save(f"{out_dir}/eval_{updates_cnt}", transitions)
+            np.save(f"{out_dir}/eval_{updates_cnt}",
+                    {"transitions": transitions,
+                     "columns": ["obs", "action", "reward", "done", "next_obs", "probs",
+                                 "pred_full_state", "obs_predic"]})
 
         return None
 
