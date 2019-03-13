@@ -235,16 +235,16 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 batch_loss /= self.recurrence
 
                 # Update actor-critic
-
+                grad_norm = 0
                 self.optimizer_policy.zero_grad()
-                batch_loss.backward()
-                grad_norm = sum(
-                    p.grad.data.norm(2).item() ** 2 for p in self.acmodel.policy_model.parameters()
-                    if p.grad is not None
-                ) ** 0.5
-                torch.nn.utils.clip_grad_norm_(self.acmodel.policy_model.parameters(),
-                                               self.max_grad_norm)
-                self.optimizer_policy.step()
+                # batch_loss.backward()
+                # grad_norm = sum(
+                #     p.grad.data.norm(2).item() ** 2 for p in self.acmodel.policy_model.parameters()
+                #     if p.grad is not None
+                # ) ** 0.5
+                # torch.nn.utils.clip_grad_norm_(self.acmodel.policy_model.parameters(),
+                #                                self.max_grad_norm)
+                # self.optimizer_policy.step()
 
                 # Update log values
 
@@ -292,18 +292,11 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         agworld_embs = torch.zeros(num_frames_per_proc, num_procs,
                                    agworld_network.embedding_size, device=device)
 
-        # TODO fix first prev_action! Does Not exist
         eactions_onehot = torch.zeros([num_frames_per_proc, num_procs,
                                        env.action_space.n], device=device)
         eactions_onehot.scatter_(2, eactions.unsqueeze(2).long(), 1.)
 
-        # Offset vector of actions -> action[i] == action[i+1] !!!!!
-        # Make one hot vector representations for actions
-        prev_actions_one = torch.zeros((1, num_procs, env.action_space.n), device=device)
-        prev_actions = torch.zeros((1, num_procs), device=device).long()
-        eactions_onehot = torch.cat([prev_actions_one, eactions_onehot], dim=0).contiguous()
-        eactions = torch.cat([prev_actions, eactions], dim=0).contiguous()
-
+        prev_actions = eactions_onehot[0]  # TODO fix first prev_action! Does Not exist
         for i in range(num_frames_per_proc - 1):
             obs = eobs[i]
             masks = emasks[i]
@@ -311,12 +304,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             # Do one agent-environment interaction
             with torch.no_grad():
                 obs_predict, envworld_mems[i + 1] = \
-                    envworld_network(obs, envworld_mems[i] * masks, eactions_onehot[i],
-                                     eactions_onehot[i + 1])
+                    envworld_network(obs, envworld_mems[i] * masks, prev_actions,
+                                     eactions_onehot[i])
 
                 _, agworld_mems[i + 1], agworld_embs[i] = \
-                    agworld_network(obs, agworld_mems[i] * masks, eactions_onehot[i],
-                                    eactions_onehot[i + 1])
+                    agworld_network(obs, agworld_mems[i] * masks, prev_actions, eactions_onehot[i])
+                prev_actions = eactions_onehot[i]
 
             # TODO add somewhere next memory! to use @ next step
 
@@ -346,7 +339,67 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         log_agworld_loss = []
         log_evaluator_loss = []
 
-        for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds):
+        # # Test 2 step action pred
+        # print(eobs.size())
+        # print(eactions_onehot.size())
+        # for inds in self._get_batches_starting_indexes(recurrence=2):
+        #     agworld_mem = agworld_mems[inds]
+        #     agworld_emb = agworld_embs[inds]
+        #     new_agworld_emb = [None] * recurrence_worlds
+        #     new_agworld_mem = [None] * recurrence_worlds
+        #     prev_actions_one = eactions_onehot[inds + i].detach()
+        #     crt_actions = eactions_onehot[inds + i + 1].detach()
+        #
+        #     # # -- Optimize agworld model
+        #     # agworld_batch_loss /= recurrence_worlds
+        #     #
+        #     # optimizer_agworld.zero_grad()
+        #     # agworld_batch_loss.backward()
+        #     # grad_norm = sum(
+        #     #     p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
+        #     #     if p.grad is not None
+        #     # ) ** 0.5
+        #     # torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
+        #     # optimizer_agworld.step()
+        #     #
+        #     # log_agworld_loss.append(agworld_batch_loss.item())
+        #
+        #     # Forward pass Agent Net for memory
+        #     i = 0
+        #     sb = exps[inds + i]
+        #     agworld_mem = agworld_mems[inds]
+        #     obs = eobs[inds + i].detach()
+        #     prev_actions_one = eactions_onehot[inds + i].detach()
+        #     crt_actions = eactions_onehot[inds + i + 1].detach()
+        #
+        #     _, agworld_mem_0, embedding_0 = \
+        #         agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
+        #
+        #     i = 1
+        #     sb = exps[inds + i]
+        #     obs = eobs[inds + i].detach()
+        #     prev_actions_one = eactions_onehot[inds + i].detach()
+        #     crt_actions = eactions_onehot[inds + i + 1].detach()
+        #     crt_actions_long = eactions[inds + i + 1].detach()
+        #
+        #     _, agworld_mem_1, embedding_1 = \
+        #         agworld_network(obs, agworld_mem_0 * sb.mask, prev_actions_one, crt_actions)
+        #
+        #     pred_act = agworld_network.forward_action(embedding_0, embedding_1)
+        #     agworld_batch_loss = loss_m_aworld(pred_act, crt_actions_long)
+        #
+        #     # -- Optimize agworld model
+        #     optimizer_agworld.zero_grad()
+        #     agworld_batch_loss.backward()
+        #     grad_norm = sum(
+        #         p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
+        #         if p.grad is not None
+        #     ) ** 0.5
+        #     torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
+        #     optimizer_agworld.step()
+        #     log_agworld_loss.append(agworld_batch_loss.item())
+
+        for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
             envworld_mem = envworld_mems[inds]
             agworld_mem = agworld_mems[inds]
@@ -364,8 +417,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 obs = eobs[inds + i].detach()
                 crt_full_state = estates[inds + i].detach()
                 next_obs = eobs[inds + i + 1].detach()
-                prev_actions_one = eactions_onehot[inds + i].detach()
-                crt_actions = eactions_onehot[inds + i + 1].detach()
+                prev_actions_one = eactions_onehot[inds + i - 1].detach()
+                crt_actions = eactions_onehot[inds + i].detach()
 
                 # Compute loss for env world
                 obs_predict, envworld_mem = \
@@ -383,23 +436,24 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                 # Forward pass Agent Net for memory
                 _, agworld_mem, new_agworld_emb[i] = \
-                    agworld_network(obs, agworld_mem * masks, prev_actions_one, crt_actions)
+                    agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
                 new_agworld_mem[i] = agworld_mem
 
             # -- Last pass for step recurrence_worlds
             i = recurrence_worlds - 1
 
+            sb = exps[inds + i]
             obs = eobs[inds + i].detach()
-            prev_actions_one = eactions_onehot[inds + i].detach()
-            crt_actions = eactions_onehot[inds + i + 1].detach()
+            prev_actions_one = eactions_onehot[inds + i - 1].detach()
+            crt_actions = eactions_onehot[inds + i].detach()
 
             _, new_agworld_mem[i], new_agworld_emb[i] = \
-                agworld_network(obs, agworld_mem * masks, prev_actions_one, crt_actions)
+                agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
 
             # Go back and predict action given embeddint(t) & embedding (t+1)
             for i in range(recurrence_worlds - 1):
                 # prev_actions = eactions[inds + i].detach()
-                crt_actions = eactions[inds + i + 1].detach()
+                crt_actions = eactions[inds + i].detach()
 
                 pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
                 agworld_batch_loss += loss_m_aworld(pred_act, crt_actions)
@@ -468,7 +522,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         return logs
 
-    def _get_batches_starting_indexes(self, recurrence=None):
+    def _get_batches_starting_indexes(self, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
 
@@ -480,11 +534,25 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         -------
         batches_starting_indexes : list of list of int
             the indexes of the experiences to be used at first for each batch
+
         """
+        num_frames_per_proc = self.num_frames_per_proc
+        num_procs = self.num_procs
+
         if recurrence is None:
             recurrence = self.recurrence
 
-        indexes = np.arange(0, self.num_frames, recurrence)
+        # Consider Num frames list ordered P * T
+        if padding == 0:
+            indexes = np.arange(0, self.num_frames, recurrence)
+        else:
+            # Consider Num frames list ordered P * T
+            # Do not index step[:padding] and step[-padding:]
+            frame_index = np.arange(padding, num_frames_per_proc-padding+1-recurrence, recurrence)
+            indexes = np.resize(frame_index.reshape((1, -1)), (num_procs, len(frame_index)))
+            indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
+            indexes = indexes.reshape(-1)
+
         indexes = np.random.permutation(indexes)
 
         # Shift starting indexes by recurrence//2 half the time
