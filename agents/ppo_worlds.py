@@ -51,26 +51,29 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         assert self.batch_size % self.recurrence == 0
 
-        self.optimizer_policy = getattr(torch.optim, optimizer)(
-            self.acmodel.policy_model.parameters(), lr, eps=adam_eps)
-
-        # Prepare intrinsic generators
+        # -- Prepare intrinsic generators
         # self.acmodel.random_target.eval()
         self.predictor_rms = RunningMeanStd()
         self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
-        # self.optimizer_predictor = getattr(torch.optim, optimizer)(
-        #     self.acmodel.predictor_network.parameters(), lr,eps=adam_eps)
+        # -- Prepare optimizers
+        self.optimizer_policy = getattr(torch.optim, optimizer)(
+            self.acmodel.policy_model.parameters(), lr, eps=adam_eps)
 
         self.optimizer_envworld = getattr(torch.optim, optimizer)(
             self.acmodel.envworld_network.parameters(), lr, eps=adam_eps)
+
+        self.optimizer_agworld = getattr(torch.optim, optimizer)(
+            self.acmodel.agworld_network.parameters(), lr, eps=adam_eps)
 
         self.optimizer_evaluator = getattr(torch.optim, optimizer)(
             self.acmodel.evaluator_network.parameters(), lr, eps=adam_eps)
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
-            # self.optimizer_predictor.load_state_dict(agent_data["optimizer_predictor"])
+            self.optimizer_envworld.load_state_dict(agent_data["optimizer_envworld"])
+            self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
+            self.optimizer_evaluator.load_state_dict(agent_data["optimizer_evaluator"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
         self.batch_num = 0
@@ -257,6 +260,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         # Run worlds models & generate memories
 
         envworld_network = self.acmodel.envworld_network
+        agworld_network = self.acmodel.agworld_network
         evaluator_network = self.acmodel.evaluator_network
 
         num_procs = self.num_procs
@@ -276,20 +280,29 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         eobs = torch.transpose(torch.transpose(eobs, 2, 4), 3, 4)
 
         # From  P x T -> T x P
-        eactions = exps.action.view(shape).transpose(0, 1)
+        eactions = exps.action.view(shape).transpose(0, 1).long()
         emasks = exps.mask.view(shape + exps.mask.size()[1:]).transpose(0, 1)
 
         envworld_mems = torch.zeros(num_frames_per_proc, num_procs,
                                     envworld_network.memory_size, device=device)
 
-        # Offset vector of actions -> action[i] == action[i+1] !!!!!
-        # Make one hot vector representations for actions
+        agworld_mems = torch.zeros(num_frames_per_proc, num_procs,
+                                   agworld_network.memory_size, device=device)
+
+        agworld_embs = torch.zeros(num_frames_per_proc, num_procs,
+                                   agworld_network.embedding_size, device=device)
+
+        # TODO fix first prev_action! Does Not exist
         eactions_onehot = torch.zeros([num_frames_per_proc, num_procs,
                                        env.action_space.n], device=device)
         eactions_onehot.scatter_(2, eactions.unsqueeze(2).long(), 1.)
 
-        prev_actions = torch.zeros((1, num_procs, env.action_space.n), device=device)
-        eactions_onehot = torch.cat([prev_actions, eactions_onehot], dim=0)
+        # Offset vector of actions -> action[i] == action[i+1] !!!!!
+        # Make one hot vector representations for actions
+        prev_actions_one = torch.zeros((1, num_procs, env.action_space.n), device=device)
+        prev_actions = torch.zeros((1, num_procs), device=device).long()
+        eactions_onehot = torch.cat([prev_actions_one, eactions_onehot], dim=0).contiguous()
+        eactions = torch.cat([prev_actions, eactions], dim=0).contiguous()
 
         for i in range(num_frames_per_proc - 1):
             obs = eobs[i]
@@ -297,9 +310,13 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             # Do one agent-environment interaction
             with torch.no_grad():
-                obs_predic, envworld_mems[i+1] = envworld_network(obs, envworld_mems[i] * masks,
-                                                                  eactions_onehot[i],
-                                                                  eactions_onehot[i + 1])
+                obs_predict, envworld_mems[i + 1] = \
+                    envworld_network(obs, envworld_mems[i] * masks, eactions_onehot[i],
+                                     eactions_onehot[i + 1])
+
+                _, agworld_mems[i + 1], agworld_embs[i] = \
+                    agworld_network(obs, agworld_mems[i] * masks, eactions_onehot[i],
+                                    eactions_onehot[i + 1])
 
             # TODO add somewhere next memory! to use @ next step
 
@@ -308,40 +325,52 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         optimizer_evaluator = self.optimizer_evaluator
         optimizer_envworld = self.optimizer_envworld
+        optimizer_agworld = self.optimizer_agworld
         recurrence_worlds = self.recurrence_worlds
         max_grad_norm = self.max_grad_norm
 
         # for all tensors below, T x P -> P x T -> P * T
         envworld_mems = envworld_mems.transpose(0, 1).reshape(-1, *envworld_mems.shape[2:])
+        agworld_mems = agworld_mems.transpose(0, 1).reshape(-1, *agworld_mems.shape[2:])
+        agworld_embs = agworld_embs.transpose(0, 1).reshape(-1, *agworld_embs.shape[2:])
         eobs = torch.transpose(torch.transpose(obs_igms, 1, 3), 2, 3)
         estates = estates.transpose(0, 1).view(-1, *estates.size()[2:])
+        eactions = eactions.transpose(0, 1).contiguous().view(-1, *eactions.size()[2:])
         eactions_onehot = eactions_onehot.transpose(0, 1).reshape(-1, *eactions_onehot.shape[2:])
 
-        loss_m_world = torch.nn.MSELoss()
+        loss_m_eworld = torch.nn.MSELoss()
+        loss_m_aworld = torch.nn.CrossEntropyLoss()
         loss_m_eval = torch.nn.MSELoss()
 
         log_envworld_loss = []
+        log_agworld_loss = []
         log_evaluator_loss = []
 
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds):
 
             envworld_mem = envworld_mems[inds]
+            agworld_mem = agworld_mems[inds]
+            agworld_emb = agworld_embs[inds]
+            new_agworld_emb = [None] * recurrence_worlds
+            new_agworld_mem = [None] * recurrence_worlds
 
             envworld_batch_loss = 0
+            agworld_batch_loss = 0
             evaluator_batch_loss = 0
 
-            for i in range(recurrence_worlds-1):
+            # TODO not all recurrence is done ?! Must need next state + obs
+            for i in range(recurrence_worlds - 1):
                 sb = exps[inds + i]
-                obs = eobs[inds + i]
-                crt_full_state = estates[inds + i]
-                next_obs = eobs[inds + i + 1]
-                prev_actions = eactions_onehot[inds + i]
-                crt_actions = eactions_onehot[inds + i + 1]
+                obs = eobs[inds + i].detach()
+                crt_full_state = estates[inds + i].detach()
+                next_obs = eobs[inds + i + 1].detach()
+                prev_actions_one = eactions_onehot[inds + i].detach()
+                crt_actions = eactions_onehot[inds + i + 1].detach()
 
                 # Compute loss for env world
-                obs_predic, envworld_mem = envworld_network(obs, envworld_mem * sb.mask,
-                                                            prev_actions, crt_actions)
-                envworld_batch_loss += loss_m_world(obs_predic, next_obs.detach())
+                obs_predict, envworld_mem = \
+                    envworld_network(obs, envworld_mem * sb.mask, prev_actions_one, crt_actions)
+                envworld_batch_loss += loss_m_eworld(obs_predict, next_obs)
 
                 # TODO Update memories for next epoch
                 # # Update memories for next epoch
@@ -351,6 +380,29 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 # Compute loss for evaluator
                 pred_full_state = evaluator_network(envworld_mem.detach())
                 evaluator_batch_loss += loss_m_eval(pred_full_state, crt_full_state)
+
+                # Forward pass Agent Net for memory
+                _, agworld_mem, new_agworld_emb[i] = \
+                    agworld_network(obs, agworld_mem * masks, prev_actions_one, crt_actions)
+                new_agworld_mem[i] = agworld_mem
+
+            # -- Last pass for step recurrence_worlds
+            i = recurrence_worlds - 1
+
+            obs = eobs[inds + i].detach()
+            prev_actions_one = eactions_onehot[inds + i].detach()
+            crt_actions = eactions_onehot[inds + i + 1].detach()
+
+            _, new_agworld_mem[i], new_agworld_emb[i] = \
+                agworld_network(obs, agworld_mem * masks, prev_actions_one, crt_actions)
+
+            # Go back and predict action given embeddint(t) & embedding (t+1)
+            for i in range(recurrence_worlds - 1):
+                # prev_actions = eactions[inds + i].detach()
+                crt_actions = eactions[inds + i + 1].detach()
+
+                pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
+                agworld_batch_loss += loss_m_aworld(pred_act, crt_actions)
 
             # -- Optimize world model
             envworld_batch_loss /= recurrence_worlds
@@ -380,6 +432,20 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             log_evaluator_loss.append(evaluator_batch_loss.item())
 
+            # -- Optimize agworld model
+            agworld_batch_loss /= recurrence_worlds
+
+            optimizer_agworld.zero_grad()
+            agworld_batch_loss.backward()
+            grad_norm = sum(
+                p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
+                if p.grad is not None
+            ) ** 0.5
+            torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
+            optimizer_agworld.step()
+
+            log_agworld_loss.append(agworld_batch_loss.item())
+
         # ------------------------------------------------------------------------------------------
 
         # Log some values
@@ -395,6 +461,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         logs["grad_norm"] = np.mean(log_grad_norms)
 
         logs["envworld_loss"] = np.mean(log_envworld_loss)
+        logs["agworld_loss"] = np.mean(log_agworld_loss)
         logs["evaluator_loss"] = np.mean(log_evaluator_loss)
 
         self.updates_cnt += 1
@@ -429,14 +496,18 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             self.batch_num += 1
 
         num_indexes = self.batch_size // recurrence
-        batches_starting_indexes = [indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)]
+        batches_starting_indexes = [
+            indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)
+        ]
 
         return batches_starting_indexes
 
     def get_save_data(self):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
-            # "optimizer_predictor": self.optimizer_predictor.state_dict(),
+            "optimizer_envworld": self.optimizer_envworld.state_dict(),
+            "optimizer_agworld": self.optimizer_agworld.state_dict(),
+            "optimizer_evaluator": self.optimizer_evaluator.state_dict(),
             "predictor_rms": self.predictor_rms,
         })
 
@@ -547,7 +618,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         evaluator_network = self.acmodel.evaluator_network
         envworld_network = self.acmodel.envworld_network
         updates_cnt = self.updates_cnt
-
 
         obs = env.reset()
         if recurrent:

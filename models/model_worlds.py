@@ -21,6 +21,7 @@ class WorldsModels(nn.Module, torch_rl.RecurrentACModel):
                                               use_text=use_text)
 
         self.envworld_network = EnvWorld(cfg, obs_space, action_space)
+        self.agworld_network = AgentWorld(cfg, obs_space, action_space)
 
         self.evaluator_network = EvaluationNet(cfg,
                                                self.envworld_network.memory_size,
@@ -173,15 +174,15 @@ class EnvWorld(nn.Module):
         out_size = n * m * channels
 
         self.image_conv = nn.Sequential(
-            nn.Conv2d(channels, 16, (3, 3)),
+            nn.Conv2d(channels, 16, (2, 2)),
             nn.LeakyReLU(),
-            nn.Conv2d(16, 32, (3, 3)),
+            nn.Conv2d(16, 32, (2, 2)),
             nn.LeakyReLU(),
-            # nn.Conv2d(32, 64, (2, 2)),
-            # nn.LeakyReLU(),
+            nn.Conv2d(32, 64, (2, 2)),
+            nn.LeakyReLU(),
         )
 
-        image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 32
+        image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
 
         self.fc1 = nn.Sequential(
             nn.Linear(image_embedding_size, hidden_size),
@@ -199,7 +200,6 @@ class EnvWorld(nn.Module):
             nn.Linear(memory_size, out_size),
             nn.ReLU()
         )
-
 
     @property
     def memory_size(self):
@@ -221,6 +221,82 @@ class EnvWorld(nn.Module):
 
         x = self.fc2(x)
         return x.view(b_size[:1] + self.action_space), memory
+
+
+class AgentWorld(nn.Module):
+    def __init__(self, cfg, obs_space, action_space):
+        super(AgentWorld, self).__init__()
+        n = obs_space["image"][0]
+        m = obs_space["image"][1]
+
+        hidden_size = 512  # getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = 256  # getattr(cfg, "memory_size", 256)
+        channels = 3
+        self.action_space = torch.Size((action_space.n, ))
+
+        out_size = n * m * channels
+
+        self.image_conv = nn.Sequential(
+            nn.Conv2d(channels, 16, (2, 2)),
+            nn.LeakyReLU(),
+            nn.Conv2d(16, 32, (2, 2)),
+            nn.LeakyReLU(),
+            nn.Conv2d(32, 64, (2, 2)),
+            nn.LeakyReLU(),
+        )
+
+        image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+
+        # Consider embedding out of fc1
+        self.fc1 = nn.Sequential(
+            nn.Linear(image_embedding_size, hidden_size),
+        )
+
+        self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
+
+        # Next state prediction
+
+        self.fc2 = nn.Sequential(
+            nn.Linear(memory_size + hidden_size, memory_size),
+            # nn.Linear(hidden_size + hidden_size, memory_size),
+            nn.ReLU(),
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(),
+            nn.Linear(memory_size, action_space.n),
+            # nn.ReLU()
+        )
+
+        self._embedding_size = hidden_size
+
+    @property
+    def memory_size(self):
+        return self._memory_size
+
+    @property
+    def embedding_size(self):
+        return self._embedding_size
+
+    def forward(self, x, memory, action_prev, action_next):
+        b_size = x.size()
+
+        x = self.image_conv(x)
+        x = x.view(b_size[0], -1)
+
+        x = local_embedding = self.fc1(x)
+
+        local_embedding = nn.ReLU()(local_embedding)
+
+        x = torch.cat([x, action_prev], dim=1)
+
+        x = memory = self.memory_rnn(x, memory)
+
+        return None, memory, local_embedding
+
+    def forward_action(self, x, embedding):
+        x = torch.cat([x, embedding], dim=1)
+
+        x = self.fc2(x)
+        return x
 
 
 class EvaluationNet(nn.Module):
@@ -246,50 +322,4 @@ class EvaluationNet(nn.Module):
 
         return x.view(b_size, *self.out_space)
 
-
-class AgentWorld(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(AgentWorld, self).__init__()
-        n = obs_space["image"][0]
-        m = obs_space["image"][1]
-
-        hidden_size = getattr(cfg, "hidden_size", 256)
-        memory_size = getattr(cfg, "memory_size", 256)
-
-        out_size = n * m * 3
-
-        self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (1, 1)),
-            nn.LeakyReLU(),
-            nn.Conv2d(16, 32, (2, 2)),
-            nn.LeakyReLU(),
-            nn.Conv2d(32, 64, (2, 2)),
-            nn.LeakyReLU()
-        )
-
-        image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
-
-        self.fc1 = nn.Linear(image_embedding_size, hidden_size)
-
-        self.memory_rnn = nn.GRUCell(hidden_size, memory_size)
-
-        self.fc2 = nn.Sequential(
-            nn.Linear(memory_size, memory_size//2),
-            nn.ReLU(),
-            nn.Linear(memory_size//2, out_size),
-            nn.ReLU()
-        )
-
-    def forward(self, x, mem=None):
-        b_size = x.size(0)
-
-        x = self.image_conv(x)
-        x = x.view(b_size, -1)
-
-        x = self.fc1(x)
-
-        x, mem = self.memory_rnn(x, mem)
-
-        x = self.fc2(x)
-        return x
 

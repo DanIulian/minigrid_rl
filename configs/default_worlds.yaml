@@ -51,4 +51,4 @@ model:
   memory_type: GRU
   use_memory: true
 
-extra_logs: [[envworld_loss, ewL, 3f], [evaluator_loss, eL, 3f]]
+extra_logs: [[envworld_loss, ewL, 6f], [agworld_loss, awL, 6f], [evaluator_loss, EL, 6f]]
