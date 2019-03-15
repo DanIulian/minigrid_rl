@@ -17,18 +17,11 @@ class WorldsModels(nn.Module, torch_rl.RecurrentACModel):
     def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
         super().__init__()
 
-        connect_worlds = getattr(cfg, "connect_worlds", True)
-
         self.policy_model = WorldsPolicyModel(cfg, obs_space, action_space, use_memory=use_memory,
                                               use_text=use_text)
 
-        self.agworld_network = AgentWorld(cfg, obs_space, action_space)
-
-        # Configure action embedding size for connected worlds
-        if connect_worlds:
-            cfg.env_action_emb_size = self.agworld_network.memory_size
-
         self.envworld_network = EnvWorld(cfg, obs_space, action_space)
+        self.agworld_network = AgentWorld(cfg, obs_space, action_space)
 
         self.evaluator_network = EvaluationNet(cfg,
                                                self.envworld_network.memory_size,
@@ -172,8 +165,7 @@ class EnvWorld(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        action_emb_size = getattr(cfg, "env_action_emb_size", action_space.n)
-
+        max_action = 512  # getattr(cfg, "max_action", 256)
         hidden_size = 512  # getattr(cfg, "hidden_size", 256)
         self._memory_size = memory_size = 256  # getattr(cfg, "memory_size", 256)
         channels = 3
@@ -201,7 +193,7 @@ class EnvWorld(nn.Module):
         # Next state prediction
 
         self.fc2 = nn.Sequential(
-            nn.Linear(memory_size + action_emb_size, memory_size),
+            nn.Linear(memory_size + action_space.n, memory_size),
             nn.ReLU(),
             nn.Linear(memory_size, memory_size),
             nn.ReLU(),
@@ -263,10 +255,9 @@ class AgentWorld(nn.Module):
         self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
 
         # Next state prediction
-        self._embedding_size = embedding_size = hidden_size  # memory_size
 
         self.fc2 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
+            nn.Linear(memory_size + hidden_size, memory_size),
             # nn.Linear(hidden_size + hidden_size, memory_size),
             nn.ReLU(),
             nn.Linear(memory_size, memory_size),
@@ -275,16 +266,7 @@ class AgentWorld(nn.Module):
             # nn.ReLU()
         )
 
-        self.fc3 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
-            # nn.Linear(hidden_size + hidden_size, memory_size),
-            nn.ReLU(),
-            nn.Linear(memory_size, memory_size),
-            nn.ReLU(),
-            nn.Linear(memory_size, action_space.n),
-            # nn.ReLU()
-        )
-
+        self._embedding_size = hidden_size
 
     @property
     def memory_size(self):
@@ -308,20 +290,12 @@ class AgentWorld(nn.Module):
 
         x = memory = self.memory_rnn(x, memory)
 
-        # local_embedding = memory
-
         return None, memory, local_embedding
 
     def forward_action(self, x, embedding):
         x = torch.cat([x, embedding], dim=1)
 
         x = self.fc2(x)
-        return x
-
-    def forward_action_eval(self, x, embedding):
-        x = torch.cat([x, embedding], dim=1)
-
-        x = self.fc3(x)
         return x
 
 
