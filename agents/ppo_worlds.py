@@ -87,6 +87,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.eval_memory = None
         self.eval_mask = None
         self.eval_env_memory = None
+        self.eval_ag_memory = None
 
         if len(eval_envs) > 0:
             self.eval_envs = self.init_evaluator(eval_envs)
@@ -101,9 +102,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         if self.acmodel.recurrent:
             self.eval_memory = torch.zeros(len(obs), acmodel.memory_size, device=device)
-            self.eval_env_memory = torch.zeros(len(obs), acmodel.envworld_network.memory_size,
-                                               device=device)
-            self.eval_mask = torch.ones(len(obs), device=device)
+
+        self.eval_env_memory = torch.zeros(len(obs), acmodel.envworld_network.memory_size,
+                                           device=device)
+        self.eval_ag_memory = torch.zeros(len(obs), acmodel.agworld_network.memory_size,
+                                          device=device)
+        self.eval_mask = torch.ones(len(obs), device=device)
 
         return eval_envs
 
@@ -674,16 +678,24 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         acmodel = self.acmodel
         evaluator_network = self.acmodel.evaluator_network
         envworld_network = self.acmodel.envworld_network
+        agworld_network = self.acmodel.agworld_network
+
         updates_cnt = self.updates_cnt
 
         obs = env.reset()
         if recurrent:
             memory = self.eval_memory
-            mask = self.eval_mask
-            envworld_mem = self.eval_env_memory
+
+        mask = self.eval_mask.fill_(1).unsqueeze(1)
+        envworld_mem = self.eval_env_memory.zero_()
+        eval_ag_memory = self.eval_ag_memory.zero_()
 
         prev_actions = torch.zeros((len(obs), env.action_space.n), device=device)
         crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
+        pred_act = torch.zeros((len(obs), env.action_space.n), device=device)
+
+        new_agworld_emb = None
+        prev_agworld_mem = None
 
         transitions = []
         for i in range(200):
@@ -691,26 +703,41 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             obs_batch = torch.transpose(torch.transpose(preprocessed_obs.image, 1, 3), 2, 3)
 
             with torch.no_grad():
+                # Policy
+
                 if recurrent:
-                    dist, value, memory = acmodel(preprocessed_obs, memory * mask.unsqueeze(1))
+                    dist, value, memory = acmodel(preprocessed_obs, memory * mask)
                 else:
                     dist, value = acmodel(preprocessed_obs)
 
                 action = dist.sample()
                 crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)
 
-                obs_predic, envworld_mem = envworld_network(obs_batch,
-                                                            envworld_mem * mask.unsqueeze(1),
+                # Env world
+                obs_predic, envworld_mem = envworld_network(obs_batch, envworld_mem * mask,
                                                             prev_actions, crt_actions)
 
+                # Evaluation network
                 pred_full_state = evaluator_network(envworld_mem.detach())
 
+                # Agent world
+                _, eval_ag_memory, new_agworld_emb = agworld_network(obs_batch,
+                                                                     eval_ag_memory * mask,
+                                                                     prev_actions, crt_actions)
+                if prev_agworld_mem is not None:
+                    pred_act = agworld_network.forward_action(prev_agworld_mem, new_agworld_emb)
+
+                prev_agworld_mem = eval_ag_memory
+
             next_obs, reward, done, _ = env.step(action.cpu().numpy())
+
+            mask = (1 - torch.tensor(done, device=device, dtype=torch.float)).unsqueeze(1)
 
             prev_actions.copy_(crt_actions)
 
             transitions.append((obs, action, reward, done, next_obs, dist.probs.cpu(),
-                                pred_full_state.cpu(), obs_predic.cpu()))
+                                pred_full_state.cpu(), obs_predic.cpu(), envworld_mem.cpu(),
+                                eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu()))
 
             obs = next_obs
 
@@ -718,7 +745,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             np.save(f"{out_dir}/eval_{updates_cnt}",
                     {"transitions": transitions,
                      "columns": ["obs", "action", "reward", "done", "next_obs", "probs",
-                                 "pred_full_state", "obs_predic"]})
+                                 "pred_full_state", "obs_predic", "envworld_mem",
+                                 "eval_ag_memory", "new_agworld_emb", "pred_act"]})
 
         return None
 

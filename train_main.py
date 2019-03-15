@@ -223,13 +223,12 @@ def run(full_args: Namespace) -> None:
     num_frames = status["num_frames"]
     total_start_time = time.time()
     update = status["update"]
+    update_start_time = time.time()
 
     while num_frames < args.frames:
         # Update model parameters
 
-        update_start_time = time.time()
         logs = algo.update_parameters()
-        update_end_time = time.time()
 
         num_frames += logs["num_frames"]
         update += 1
@@ -237,9 +236,12 @@ def run(full_args: Namespace) -> None:
         if update % args.eval_interval == 0 and has_evaluator:
             algo.evaluate()
 
+        prev_start_time = update_start_time
+        update_start_time = time.time()
+
         # Print logs
         if update % args.log_interval == 0:
-            fps = logs["num_frames"] / (update_end_time - update_start_time)
+            fps = logs["num_frames"] / (update_start_time - prev_start_time)
             duration = int(time.time() - total_start_time)
             return_per_episode = utils.synthesize(logs["return_per_episode"])
             rreturn_per_episode = utils.synthesize(logs["reshaped_return_per_episode"])
