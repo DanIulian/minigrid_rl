@@ -14,7 +14,10 @@ def get_training_data_path(model_dir, best=False, index=None):
         return os.path.join(model_dir, "training_data_best.pt")
 
     if index is not None:
-        return os.path.join(model_dir, f"training_data_{index}.pt")
+        fld = os.path.join(model_dir, "checkpoints")
+        if not os.path.isdir(fld):
+            os.mkdir(fld)
+        return os.path.join(fld, f"training_data_{index}.pt")
 
     return os.path.join(model_dir, "training_data.pt")
 

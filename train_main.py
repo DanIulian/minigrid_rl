@@ -310,17 +310,17 @@ def main() -> None:
     if not hasattr(full_args, "run_id"):
         full_args.run_id = 0
 
-    # Define run dir
-    os.environ["TORCH_RL_STORAGE"] = "results_dir"
+    if hasattr(args, "model_dir"):
+        # Define run dir
+        os.environ["TORCH_RL_STORAGE"] = "results_dir"
 
-    suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
-    default_model_name = "{}_{}_seed{}_{}".format(args.env, full_args.agent.name, args.seed, suffix)
-    model_name = full_args.model.name or default_model_name
-    model_dir = utils.get_model_dir(model_name)
+        suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
+        default_model_name = "{}_{}_seed{}_{}".format(args.env, args.algo, args.seed, suffix)
+        model_name = args.model or default_model_name
+        model_dir = utils.get_model_dir(model_name)
 
-    full_args.out_dir = model_dir
-    full_args.model_dir = model_dir
-    args.model_dir = model_dir
+        full_args.out_dir = model_dir
+        args.model_dir = model_dir
 
     run(full_args)
 
