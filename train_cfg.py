@@ -71,6 +71,8 @@ def run(full_args: Namespace) -> None:
             env_chunk = []
             for i in range(env_i, min(env_i+actual_procs, args.procs)):
                 env = gym.make(args.env)
+                env.max_steps = full_args.env_cfg.max_episode_steps
+
                 env.seed(args.seed + 10000 * i)
                 env_chunk.append(env)
             envs.append(env_chunk)

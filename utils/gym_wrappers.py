@@ -5,6 +5,9 @@ import gym
 import numpy as np
 from copy import deepcopy
 from gym import Wrapper
+from optparse import OptionParser
+import time
+
 try:
     import gym_minigrid
 except ImportError:
@@ -106,8 +109,82 @@ class RecordFullState(Wrapper):
         self.env.seed(seed=seed)
 
 
-from optparse import OptionParser
-import time
+class ExploreActions(gym.core.Wrapper):
+    """
+        Store exploration data.
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.counts = {}
+
+    def step(self, action):
+        counts = self.counts
+        env = self.unwrapped
+        tup = (tuple(env.agent_pos), env.agent_dir, action, env.carrying)
+
+        obs, reward, done, info = self.env.step(action)
+
+        # Get the count for this (s,a) pair
+        preCnt = 0
+        if tup in counts:
+            preCnt = counts[tup]
+
+        # Update the count for this (s,a) pair
+        newCnt = preCnt + 1
+        counts[tup] = newCnt
+
+        return obs, reward, done, info
+
+    def get_next_action_cnt(self):
+        env = self.unwrapped
+        counts = self.counts
+
+        n_act = env.action_space.n
+        v = np.zeros(n_act)
+
+        for action in range(env.action_space.n):
+            tup = (tuple(env.agent_pos), env.agent_dir, action, env.carrying)
+            if tup in counts:
+                v[action] = counts[tup]
+        return v
+
+    def get_new_action_prob(self, temperature=1):
+        v = self.get_next_action_cnt()
+        v = (v.max() - v) ** temperature
+        return v / v.sum()
+
+
+class ExplorePositions(gym.core.Wrapper):
+    """
+        Store exploration data.
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.counts = {}
+
+    def step(self, action):
+
+        obs, reward, done, info = self.env.step(action)
+
+        # Tuple based on which we index the counts
+        # We use the position after an update
+        env = self.unwrapped
+        tup = (env.agent_pos)
+
+        # Get the count for this key
+        preCnt = 0
+        if tup in self.counts:
+            preCnt = self.counts[tup]
+
+        # Update the count for this key
+        newCnt = preCnt + 1
+        self.counts[tup] = newCnt
+
+        return obs, reward, done, info
+
+
 def main():
     parser = OptionParser()
     parser.add_option(

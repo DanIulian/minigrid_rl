@@ -49,23 +49,30 @@ def extra_log_fields(header: list, log_keys: list) ->list:
     return extra_fields
 
 
-def get_envs(full_args, env_wrapper, no_envs):
+def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
+    """ Minigrid action 6 is Done - useless"""
     envs = []
     args = full_args.main
     actual_procs = args.actual_procs
     add_to_cfg(full_args, MAIN_CFG_ARGS, "out_dir", full_args.out_dir)
 
-    env = env_wrapper(gym.make(args.env))
+    env = gym.make(args.env)
+    env.action_space.n = n_actions
     env.max_steps = full_args.env_cfg.max_episode_steps
-
+    env = env_wrapper(env)
     env.seed(args.seed + 10000 * 0)
+
     envs.append([env])
     chunk_size = int(np.ceil((no_envs - 1) / float(actual_procs)))
     for env_i in range(1, no_envs, chunk_size):
         env_chunk = []
         for i in range(env_i, min(env_i + chunk_size, no_envs)):
-            env = env_wrapper(gym.make(args.env))
+            env = gym.make(args.env)
+            env.action_space.n = n_actions
+            env.max_steps = full_args.env_cfg.max_episode_steps
+            env = env_wrapper(env)
             env.seed(args.seed + 10000 * i)
+
             env_chunk.append(env)
         envs.append(env_chunk)
 
@@ -140,11 +147,12 @@ def run(full_args: Namespace) -> None:
         env_wrapper = getattr(gym_wrappers, wrapper_method)
 
     actual_procs = getattr(args, "actual_procs", None)
+    no_actions = getattr(full_args.env_cfg, "no_actions", 6)
 
     if actual_procs:
         # Split envs in chunks
         no_envs = args.procs
-        envs, chunk_size = get_envs(full_args, env_wrapper, no_envs)
+        envs, chunk_size = get_envs(full_args, env_wrapper, no_envs, n_actions=no_actions)
         first_env = envs[0][0]
         print(f"NO of envs / proc: {chunk_size}; No of processes {len(envs[1:])} + Master")
     else:
@@ -160,7 +168,7 @@ def run(full_args: Namespace) -> None:
     eval_envs = []
     if full_args.env_cfg.no_eval_envs > 0:
         no_envs = full_args.env_cfg.no_eval_envs
-        eval_envs, chunk_size = get_envs(full_args, env_wrapper, no_envs)
+        eval_envs, chunk_size = get_envs(full_args, env_wrapper, no_envs, n_actions=no_actions)
 
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
@@ -310,17 +318,17 @@ def main() -> None:
     if not hasattr(full_args, "run_id"):
         full_args.run_id = 0
 
-    # Define run dir
-    os.environ["TORCH_RL_STORAGE"] = "results_dir"
+    if hasattr(args, "model_dir"):
+        # Define run dir
+        os.environ["TORCH_RL_STORAGE"] = "results_dir"
 
-    suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
-    default_model_name = "{}_{}_seed{}_{}".format(args.env, full_args.agent.name, args.seed, suffix)
-    model_name = full_args.model.name or default_model_name
-    model_dir = utils.get_model_dir(model_name)
+        suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
+        default_model_name = "{}_{}_seed{}_{}".format(args.env, args.algo, args.seed, suffix)
+        model_name = args.model or default_model_name
+        model_dir = utils.get_model_dir(model_name)
 
-    full_args.out_dir = model_dir
-    full_args.model_dir = model_dir
-    args.model_dir = model_dir
+        full_args.out_dir = model_dir
+        args.model_dir = model_dir
 
     run(full_args)
 

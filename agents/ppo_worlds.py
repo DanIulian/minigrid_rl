@@ -5,11 +5,17 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch_rl
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 from utils.format import preprocess_images
+from torch.distributions.categorical import Categorical
 
 
 class HLoss(torch.nn.Module):
@@ -20,6 +26,31 @@ class HLoss(torch.nn.Module):
         b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
         b = -1.0 * b.sum()
         return b
+
+
+class RandomPolicy(nn.Module, torch_rl.RecurrentACModel):
+    def __init__(self, crt_policy, no_actions, device):
+        super().__init__()
+        self.no_actions = no_actions
+        self.device = device
+        self._memory_size = crt_policy.memory_size
+
+        self.aux = nn.Linear(10, 10)
+
+    @property
+    def memory_size(self):
+        return self._memory_size
+
+    def forward(self, obs, memory):
+        no_actions = self.no_actions
+        device = self.device
+        batch = obs.image.size(0)
+
+        dist = Categorical(probs=torch.rand(batch, no_actions).to(device))
+        vpred_ext = torch.rand(batch).to(device)
+        vpred_int = torch.rand(batch).to(device)
+
+        return dist, (vpred_ext, vpred_int), memory
 
 
 class PPOWorlds(TwoValueHeadsBaseGeneral):
@@ -46,14 +77,21 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         eval_envs = kwargs.get("eval_envs", [])
 
         self.connect_worlds = getattr(cfg, "connect_worlds", True)
+        self.env_world_prev_act = getattr(cfg, "env_world_prev_act", False)
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
         self.nminibatches = getattr(cfg, "nminibatches", 4)
         self.out_dir = getattr(cfg, "out_dir", None)
+        self.play_heuristic = play_heuristic = getattr(cfg, "play_heuristic", 0)
 
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
+
+        if play_heuristic == 1:
+            no_actions = self.env.action_space.n
+            self.acmodel.policy_model = RandomPolicy(self.acmodel.policy_model, no_actions,
+                                                     self.device)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
@@ -100,9 +138,13 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.eval_mask = None
         self.eval_env_memory = None
         self.eval_ag_memory = None
+        self.eval_dir = None
 
         if len(eval_envs) > 0:
             self.eval_envs = self.init_evaluator(eval_envs)
+            self.eval_dir = os.path.join(self.out_dir, "eval")
+            if not os.path.isdir(self.eval_dir):
+                os.mkdir(self.eval_dir)
 
     def init_evaluator(self, envs):
         from torch_rl.utils import ParallelEnv
@@ -279,6 +321,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         agworld_network = self.acmodel.agworld_network
         evaluator_network = self.acmodel.evaluator_network
         connect_worlds = self.connect_worlds
+        env_world_prev_act = self.env_world_prev_act
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
@@ -313,7 +356,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                                        env.action_space.n], device=device)
         eactions_onehot.scatter_(2, eactions.unsqueeze(2).long(), 1.)
 
-        prev_actions = eactions_onehot[0]  # TODO fix first prev_action! Does Not exist
+        prev_actions = torch.zeros_like(eactions_onehot[0])
+        # TODO fix first prev_action! Does Not exist
+
         for i in range(num_frames_per_proc - 1):
             obs = eobs[i]
             masks = emasks[i]
@@ -327,6 +372,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             # TODO add somewhere next memory! to use @ next step
 
         prev_actions = eactions_onehot[0]  # TODO fix first prev_action! Does Not exist
+        if not env_world_prev_act:
+            prev_actions = torch.zeros_like(prev_actions)
+
         # TODO fix not using last 2 memories
         for i in range(num_frames_per_proc - 1 - int(connect_worlds)):
             obs = eobs[i]
@@ -339,7 +387,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                 obs_predict, envworld_mems[i + 1] = \
                     envworld_network(obs, envworld_mems[i] * masks, prev_actions, action_embedding)
-                prev_actions = eactions_onehot[i]
+                if env_world_prev_act:
+                    prev_actions = eactions_onehot[i]
 
             # TODO add somewhere next memory! to use @ next step
 
@@ -373,66 +422,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         log_agh_eval_loss = []
         log_evaluator_loss = []
 
-        # # Test 2 step action pred
-        # print(eobs.size())
-        # print(eactions_onehot.size())
-        # for inds in self._get_batches_starting_indexes(recurrence=2):
-        #     agworld_mem = agworld_mems[inds]
-        #     agworld_emb = agworld_embs[inds]
-        #     new_agworld_emb = [None] * recurrence_worlds
-        #     new_agworld_mem = [None] * recurrence_worlds
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #
-        #     # # -- Optimize agworld model
-        #     # agworld_batch_loss /= recurrence_worlds
-        #     #
-        #     # optimizer_agworld.zero_grad()
-        #     # agworld_batch_loss.backward()
-        #     # grad_norm = sum(
-        #     #     p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
-        #     #     if p.grad is not None
-        #     # ) ** 0.5
-        #     # torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-        #     # optimizer_agworld.step()
-        #     #
-        #     # log_agworld_loss.append(agworld_batch_loss.item())
-        #
-        #     # Forward pass Agent Net for memory
-        #     i = 0
-        #     sb = exps[inds + i]
-        #     agworld_mem = agworld_mems[inds]
-        #     obs = eobs[inds + i].detach()
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #
-        #     _, agworld_mem_0, embedding_0 = \
-        #         agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
-        #
-        #     i = 1
-        #     sb = exps[inds + i]
-        #     obs = eobs[inds + i].detach()
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #     crt_actions_long = eactions[inds + i + 1].detach()
-        #
-        #     _, agworld_mem_1, embedding_1 = \
-        #         agworld_network(obs, agworld_mem_0 * sb.mask, prev_actions_one, crt_actions)
-        #
-        #     pred_act = agworld_network.forward_action(embedding_0, embedding_1)
-        #     agworld_batch_loss = loss_m_aworld(pred_act, crt_actions_long)
-        #
-        #     # -- Optimize agworld model
-        #     optimizer_agworld.zero_grad()
-        #     agworld_batch_loss.backward()
-        #     grad_norm = sum(
-        #         p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
-        #         if p.grad is not None
-        #     ) ** 0.5
-        #     torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-        #     optimizer_agworld.step()
-        #     log_agworld_loss.append(agworld_batch_loss.item())
-
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
             envworld_mem = envworld_mems[inds]
@@ -461,7 +450,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 new_agworld_mem[i] = agworld_mem
 
             # Go back and predict action given embeddint(t) & embedding (t+1)
-            empty_mem = torch.rand_like(new_agworld_mem[i])
+            empty_mem = torch.rand_like(new_agworld_mem[0])
             for i in range(recurrence_worlds-1):
                 prev_actions = eactions[inds + i - 1].detach()
                 crt_actions = eactions[inds + i].detach()
@@ -479,10 +468,14 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 # agh_eval_batch_loss += loss_m_ah_eval(pred_act, crt_actions.detach())
 
             # -- ENV world
+            if not env_world_prev_act:
+                prev_actions_one = torch.zeros_like(eactions_onehot[inds])
+
             for i in range(recurrence_worlds - int(connect_worlds)):
                 sb = exps[inds + i]
                 obs = eobs[inds + i].detach()
-                prev_actions_one = eactions_onehot[inds + i - 1].detach()
+                if env_world_prev_act:
+                    prev_actions_one = eactions_onehot[inds + i - 1].detach()
                 crt_actions = eactions_onehot[inds + i].detach()
 
                 crt_full_state = estates[inds + i].detach()
@@ -733,7 +726,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         exps.states = preprocess_images(full_states, device=self.device)
 
     def evaluate(self):
-        out_dir = self.out_dir
+        out_dir = self.eval_dir
         env = self.eval_envs
         preprocess_obss = self.preprocess_obss
         device = self.device
@@ -742,6 +735,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         evaluator_network = self.acmodel.evaluator_network
         envworld_network = self.acmodel.envworld_network
         agworld_network = self.acmodel.agworld_network
+        connect_worlds = self.connect_worlds
+        env_world_prev_act = self.env_world_prev_act
 
         updates_cnt = self.updates_cnt
 
@@ -753,7 +748,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         envworld_mem = self.eval_env_memory.zero_()
         eval_ag_memory = self.eval_ag_memory.zero_()
 
-        prev_actions = torch.zeros((len(obs), env.action_space.n), device=device)
+        prev_actions_e = torch.zeros((len(obs), env.action_space.n), device=device)
+        prev_actions_a = torch.zeros((len(obs), env.action_space.n), device=device)
         crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
         pred_act = torch.zeros((len(obs), env.action_space.n), device=device)
 
@@ -777,8 +773,10 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)
 
                 # Env world
+                action_embedding = eval_ag_memory if connect_worlds else crt_actions
+
                 obs_predic, envworld_mem = envworld_network(obs_batch, envworld_mem * mask,
-                                                            prev_actions, crt_actions)
+                                                            prev_actions_e, action_embedding)
 
                 # Evaluation network
                 pred_full_state = evaluator_network(envworld_mem.detach())
@@ -786,7 +784,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 # Agent world
                 _, eval_ag_memory, new_agworld_emb = agworld_network(obs_batch,
                                                                      eval_ag_memory * mask,
-                                                                     prev_actions, crt_actions)
+                                                                     prev_actions_a, crt_actions)
                 if prev_agworld_mem is not None:
                     pred_act = agworld_network.forward_action(prev_agworld_mem, new_agworld_emb)
 
@@ -796,9 +794,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             mask = (1 - torch.tensor(done, device=device, dtype=torch.float)).unsqueeze(1)
 
-            prev_actions.copy_(crt_actions)
+            if env_world_prev_act:
+                prev_actions_e.copy_(crt_actions)
 
-            transitions.append((obs, action, reward, done, next_obs, dist.probs.cpu(),
+            prev_actions_a.copy_(crt_actions)
+
+            transitions.append((obs, action.cpu(), reward, done, next_obs, dist.probs.cpu(),
                                 pred_full_state.cpu(), obs_predic.cpu(), envworld_mem.cpu(),
                                 eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu()))
 

@@ -4,6 +4,7 @@
 
 import numpy as np
 import torch
+import os
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
@@ -88,9 +89,13 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.eval_mask = None
         self.eval_env_memory = None
         self.eval_ag_memory = None
+        self.eval_dir = None
 
         if len(eval_envs) > 0:
             self.eval_envs = self.init_evaluator(eval_envs)
+            self.eval_dir = os.path.join(self.out_dir, "eval")
+            if not os.path.isdir(self.eval_dir):
+                os.mkdir(self.eval_dir)
 
     def init_evaluator(self, envs):
         from torch_rl.utils import ParallelEnv
@@ -670,7 +675,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         exps.states = preprocess_images(full_states, device=self.device)
 
     def evaluate(self):
-        out_dir = self.out_dir
+        out_dir = self.eval_dir
         env = self.eval_envs
         preprocess_obss = self.preprocess_obss
         device = self.device

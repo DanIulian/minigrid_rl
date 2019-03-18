@@ -3,7 +3,7 @@ main:
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 4 # type=int, default=16, help="number of processes (default: 16)")
-  frames: 1.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   eval_interval: 1
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
@@ -12,14 +12,15 @@ main:
 
   max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
   save_best: true
-  save_all: true
+  save_all: fasle
 
 env_cfg:
-  max_episode_steps: 200 # environment steps
+  max_episode_steps: 1000 # environment steps
   max_image_value: 15.
   normalize: true
   wrapper: include_full_state
   no_eval_envs: 2
+  no_actions: 6 # 7 is for done
 
 agent:
   name: PPOWorlds
@@ -40,7 +41,11 @@ agent:
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   int_coeff: 1.
   ext_coeff: 2.
+
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
+  env_world_prev_act: true
+  connect_worlds: &connect_worlds false
+  play_heuristic: 1 # 0 play with policy - 1 random - 2 with exploration heuristic
 
 model:
   name: WorldsModels
@@ -49,5 +54,8 @@ model:
   text: *text
   memory_type: GRU
   use_memory: true
+  connect_worlds: *connect_worlds
 
-extra_logs: [[envworld_loss, ewL, 6f], [agworld_loss, awL, 6f], [evaluator_loss, EL, 6f]]
+extra_logs: [[envworld_loss, ewL, 6f], [evaluator_loss, EL, 6f],
+             [agworld_loss, awL, 6f], [agh_loss, ahL, 6f], [agh_eval_loss, ahEL, 6f]
+             ]
