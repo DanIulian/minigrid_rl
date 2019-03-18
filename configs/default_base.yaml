@@ -4,6 +4,7 @@ main:
   procs: 32 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 3 # type=int, default=16, help="number of processes (default: 16)")
   frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  eval_interval: 1
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
   tb: true # action="store_true", default=False, help="log into Tensorboard")
@@ -17,6 +18,9 @@ env_cfg:
   max_episode_steps: 200 # environment steps
   max_image_value: 15.
   normalize: true
+  wrapper: ""
+  no_eval_envs: 2
+  no_actions: 6 # 7 is for done
 
 agent:
   name: PPO

@@ -22,7 +22,7 @@ plt.figure()
 
 for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
     # create subplot axes in a 3x3 grid
-    ax = plt.subplot(size, size, i + 1) # nrows, ncols, axes position
+    ax = plt.subplot(size, size, i + 1)  # nrows, ncols, axes position
     exp_gdf = exp_gdf[~exp_gdf.tcount.isna()]
     if exp_gdf.tcount.any():
         # plot the continent on these axes
