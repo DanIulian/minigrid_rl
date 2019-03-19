@@ -192,11 +192,12 @@ class TwoValueHeadsBaseGeneral(ABC):
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
 
+        # Preprocess experiences
+        exps.obs = self.preprocess_obss(exps.obs, device=self.device)
+
         # Add other data to experience buffer
         self.add_extra_experience(exps)
 
-        # Preprocess experiences
-        exps.obs = self.preprocess_obss(exps.obs, device=self.device)
         # ==========================================================================================
 
         # -- Calculate intrinsic return

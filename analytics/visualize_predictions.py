@@ -54,8 +54,7 @@ def play_game():
 
 
 def main():
-    file_path = "/media/andrei/Samsung_T51/2019Mar15-150540_world_envs" \
-                "/3_env_MiniGrid_UnlockPickup_v0/0/eval/eval_900.npy"
+    file_path = "results/2019Mar19-202238_default/eval/eval_16.npy"
 
     data = np.load(file_path).item()
     columns = data["columns"]
@@ -64,23 +63,45 @@ def main():
     df = pd.DataFrame(transitions, columns=columns)
 
     env_id = 0
+    steps = 200
 
     for i in range(200):
         state = np.array(df.iloc[i]["obs"][env_id]["state"])
+        obs = np.array(df.iloc[i]["obs"][env_id]["image"])
 
         pred = df.iloc[i]["pred_full_state"][env_id]
+        obs_batch = df.iloc[i]["obs_batch"][env_id]
 
         pred_state = (pred * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
+        obs_batch = (obs_batch * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
 
         view_full_state("Full state", state)
         view_full_state("Pred state", pred_state)
 
-        next_obs = np.array(df.iloc[i]["obs"][env_id]["image"])
-        pred_obs = df.iloc[i]["obs_predic"][env_id]
-        pred_obs = (pred_obs * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
+        next_obs = np.array(df.iloc[i]["next_obs"][env_id]["image"])
+        pred_obs = (df.iloc[i]["obs_predict"][env_id].numpy().transpose(1, 2, 0)) + obs.astype(np.float) / 15.
+        pred_obs = pred_obs * 15
+        pred_obs = pred_obs.astype(np.uint8)
 
+        view_full_state("obs_batch", obs_batch)
+        view_full_state("obs", obs)
         view_full_state("Next obs", next_obs)
         view_full_state("pred_obs", pred_obs)
         cv2.waitKey(0)
         print(df.iloc[i]['action'][env_id])
 
+
+    # loss_m_eworld = torch.nn.MSELoss()
+    #
+    # loss = []
+    # for i in range(steps):
+    #     next_obs = torch.FloatTensor(df.iloc[i]["obs"][env_id]["image"]) / 15.
+    #     next_obs = torch.transpose(torch.transpose(next_obs, 0, 2), 1, 2)
+    #     pred_obs = df.iloc[i]["obs_predict"][env_id]
+    #
+    #     loss.append(loss_m_eworld(pred_obs, next_obs))
+    # print(np.mean(loss))
+
+
+if __name__ == "__main__":
+    main()

@@ -205,8 +205,8 @@ class EnvWorld(nn.Module):
             nn.ReLU(),
             nn.Linear(memory_size, memory_size),
             nn.ReLU(),
+            nn.ReLU(),
             nn.Linear(memory_size, out_size),
-            nn.ReLU()
         )
 
     @property
@@ -214,6 +214,7 @@ class EnvWorld(nn.Module):
         return self._memory_size
 
     def forward(self, x, memory, action_prev, action_next):
+
         b_size = x.size()
 
         x = self.image_conv(x)
