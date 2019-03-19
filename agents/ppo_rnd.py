@@ -17,17 +17,19 @@ class PPORND(TwoValueHeadsBase):
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
         num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
-        lr = getattr(cfg, "lr", 7e-4)
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
         entropy_coef = getattr(cfg, "entropy_coef", 0.01)
         value_loss_coef = getattr(cfg, "value_loss_coef", 0.5)
         max_grad_norm = getattr(cfg, "max_grad_norm", 0.5)
         recurrence = getattr(cfg, "recurrence", 4)
-        adam_eps = getattr(cfg, "adam_eps", 1e-5)
+
         clip_eps = getattr(cfg, "clip_eps", 0.)
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
+
         optimizer = getattr(cfg, "optimizer", "Adam")
+        optimizer_args = getattr(cfg, "optimizer_args", {})
+
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
@@ -37,7 +39,7 @@ class PPORND(TwoValueHeadsBase):
         self.nminibatches = getattr(cfg, "nminibatches", 4)
 
         super().__init__(
-            envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
+            envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
 
         self.clip_eps = clip_eps
@@ -48,8 +50,10 @@ class PPORND(TwoValueHeadsBase):
 
         assert self.batch_size % self.recurrence == 0
 
+        optimizer_args = vars(optimizer_args)
+
         self.optimizer_policy = getattr(torch.optim, optimizer)(
-            self.acmodel.policy_model.parameters(), lr,eps=adam_eps)
+            self.acmodel.policy_model.parameters(), **optimizer_args)
 
         # Prepare intrinsic generators
         self.acmodel.random_target.eval()
@@ -57,7 +61,7 @@ class PPORND(TwoValueHeadsBase):
         self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
         self.optimizer_predictor = getattr(torch.optim, optimizer)(
-            self.acmodel.predictor_network.parameters(), lr,eps=adam_eps)
+            self.acmodel.predictor_network.parameters(), **optimizer_args)
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])

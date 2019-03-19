@@ -13,7 +13,7 @@ from torch_rl.utils import DictList, ParallelEnv
 class TwoValueHeadsBaseGeneral(ABC):
     """The base class for RL algorithms."""
 
-    def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
+    def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred):
         """
         Initializes a `BaseAlgo` instance.
@@ -58,7 +58,6 @@ class TwoValueHeadsBaseGeneral(ABC):
         self.acmodel.train()
         self.num_frames_per_proc = num_frames_per_proc
         self.discount = discount
-        self.lr = lr
         self.gae_lambda = gae_lambda
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
@@ -134,6 +133,7 @@ class TwoValueHeadsBaseGeneral(ABC):
             # Do one agent-environment interaction
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
+
             with torch.no_grad():
                 if self.acmodel.recurrent:
                     dist, value, memory = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
