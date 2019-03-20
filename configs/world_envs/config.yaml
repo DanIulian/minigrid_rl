@@ -1,7 +1,10 @@
 main:
-  env: ["MiniGrid-DoorKey-8x8-v0", "MiniGrid-DoorKey-16x16-v0",
-        "MiniGrid-MultiRoom-N2-S4-v0",
-        "MiniGrid-UnlockPickup-v0",
-        "MiniGrid-BlockedUnlockPickup-v0",
-        "MiniGrid-ObstructedMaze-2Dlh-v0",
+  env: [
+    "MiniGrid-Empty-5x5-v0",
+    "MiniGrid-DoorKey-8x8-v0",
+    "MiniGrid-DoorKey-16x16-v0",
+    "MiniGrid-MultiRoom-N2-S4-v0",
+    "MiniGrid-UnlockPickup-v0",
+    "MiniGrid-BlockedUnlockPickup-v0",
+    "MiniGrid-ObstructedMaze-2Dlh-v0",
   ]

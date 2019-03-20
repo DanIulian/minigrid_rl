@@ -53,8 +53,8 @@ def play_game():
         cv2.waitKey(0)
 
 
-def main():
-    file_path = "results/2019Mar19-202238_default/eval/eval_16.npy"
+def main(file_path):
+    file_path = "results/2019Mar20-112620_default/eval/eval_30.npy" if file_path is None else file_path
 
     data = np.load(file_path).item()
     columns = data["columns"]
@@ -79,13 +79,15 @@ def main():
         view_full_state("Pred state", pred_state)
 
         next_obs = np.array(df.iloc[i]["next_obs"][env_id]["image"])
-        pred_obs = (df.iloc[i]["obs_predict"][env_id].numpy().transpose(1, 2, 0)) + obs.astype(np.float) / 15.
+        pred_diff = (df.iloc[i]["obs_predict"][env_id].numpy().transpose(1, 2, 0))
+        pred_obs = pred_diff + obs.astype(np.float) / 15.
         pred_obs = pred_obs * 15
         pred_obs = pred_obs.astype(np.uint8)
 
         view_full_state("obs_batch", obs_batch)
         view_full_state("obs", obs)
         view_full_state("Next obs", next_obs)
+        view_full_state("pred_diff", pred_diff)
         view_full_state("pred_obs", pred_obs)
         cv2.waitKey(0)
         print(df.iloc[i]['action'][env_id])
@@ -104,4 +106,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('path')
+    args = parser.parse_args()
+    main(args.path)

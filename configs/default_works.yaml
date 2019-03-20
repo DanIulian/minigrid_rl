@@ -1,16 +1,16 @@
 main:
   env: MiniGrid-Empty-5x5-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
-  procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
-  actual_procs: 4 # type=int, default=16, help="number of processes (default: 16)")
-  frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  procs: 256 # type=int, default=16, help="number of processes (default: 16)") # number of envs
+  actual_procs: 12 # type=int, default=16, help="number of processes (default: 16)")
+  frames: 2.e+7 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
-  eval_interval: 1
+  eval_interval: 5
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
   tb: false # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
-  max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
+  max_eprews: 1.93 # Cap training when mean episode rewards reaches this value
   save_best: true
   save_all: fasle
 
@@ -19,16 +19,16 @@ env_cfg:
   max_image_value: 15.
   normalize: true
   wrapper: include_full_state
-  no_eval_envs: 2
-  no_actions: 1 # 7 is for done
+  no_eval_envs: 4
+  no_actions: 6 # 7 is for done
 
 agent:
   name: PPOWorlds
-  frames_per_proc: 64 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
+  frames_per_proc: 100 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   optimizer: RMSprop
   optimizer_args:
-    lr: 0.0001
+    lr: 0.0003
 
   gae_lambda: 0.95 # type=float, default=0.95, help="lambda coefficient in GAE formula (default: 0.95, 1 means no gae)")
   entropy_coef: 0.001 # type=float, default=0.01, help="entropy term coefficient (default: 0.01)")
@@ -44,11 +44,12 @@ agent:
   ext_coeff: 2.
   running_norm_obs: false
 
+  recurrence_worlds: 4
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
   env_world_prev_act: true
   connect_worlds: &connect_worlds false
   play_heuristic: 1 # 0 play with policy - 1 random - 2 with exploration heuristic
-  recurrence_worlds: 16
+  pre_fill_memories: true
 
 model:
   name: WorldsModels
@@ -60,5 +61,5 @@ model:
   connect_worlds: *connect_worlds
 
 extra_logs: [[envworld_loss, ewL, 6f], [evaluator_loss, EL, 6f],
-             [agworld_loss, awL, 6f], [agh_loss, ahL, 6f], [agh_eval_loss, ahEL, 6f]
+             [agworld_loss, awL, 6f]
              ]
