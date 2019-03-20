@@ -1,14 +1,10 @@
 # AndreiN, 2019
 # parts from https://github.com/lcswillems/torch-rl
 
-#!/usr/bin/env python3
-
-import argparse
 import gym
 import time
 import datetime
 import torch
-import torch_rl
 import sys
 from liftoff.config import read_config
 from argparse import Namespace
@@ -35,12 +31,13 @@ def add_to_cfg(cfg: Namespace, subgroups: List[str], new_arg: str, new_arg_value
             setattr(getattr(cfg, arg), new_arg, new_arg_value)
 
 
-def post_process_args(args: NameError) -> None:
+def post_process_args(args: Namespace) -> None:
     args.mem = args.recurrence > args.min_mem
 
 
 def extra_log_fields(header: list, log_keys: list) ->list:
-    unusable_fields = ['return_per_episode', 'reshaped_return_per_episode', 'num_frames_per_episode', 'num_frames']
+    unusable_fields = ['return_per_episode', 'reshaped_return_per_episode',
+                       'num_frames_per_episode', 'num_frames']
     extra_fields = []
     for field in log_keys:
         if field not in header and field not in unusable_fields:
@@ -119,6 +116,7 @@ def run(full_args: Namespace) -> None:
 
     logger = utils.get_logger(model_dir)
     csv_file, csv_writer = utils.get_csv_writer(model_dir)
+    tb_writer = None
     if args.tb:
         from tensorboardX import SummaryWriter
         tb_writer = SummaryWriter(model_dir)
@@ -144,7 +142,15 @@ def run(full_args: Namespace) -> None:
             return x
         env_wrapper = idem
     else:
-        env_wrapper = getattr(gym_wrappers, wrapper_method)
+        env_wrappers = [getattr(gym_wrappers, w_p) for w_p in wrapper_method]
+
+        def env_wrapp(w_env):
+            for wrapper in env_wrappers[::-1]:
+                w_env = wrapper(w_env)
+            return w_env
+
+        env_wrapper = env_wrapp
+
 
     actual_procs = getattr(args, "actual_procs", None)
     no_actions = getattr(full_args.env_cfg, "no_actions", 6)
@@ -312,7 +318,7 @@ def main() -> None:
 
     """ Read configuration from disk (the old way)"""
     # Reading args
-    full_args = read_config()  # type: Args
+    full_args = read_config()  # type: Namespace
     args = full_args.main
 
     if not hasattr(full_args, "run_id"):

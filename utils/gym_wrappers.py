@@ -94,9 +94,10 @@ class RecordFullState(Wrapper):
         self._step = np.random.randint(155)
 
     def step(self, action):
+        env = self.unwrapped
         self._step += 1
 
-        observation, reward, done, info = self.env.step(action)
+        observation, reward, done, info = env.step(action)
 
         # observation["image"] = observation["image"].astype(np.int)
         # observation["image"].fill((action + 1)*2)
@@ -107,7 +108,9 @@ class RecordFullState(Wrapper):
 
     def reset(self, **kwargs):
         self._step = np.random.randint(155)
-        obs = self.env.reset(**kwargs)
+        env = self.unwrapped
+
+        obs = env.reset(**kwargs)
 
         # obs["image"] = obs["image"].astype(np.int)
         # obs["image"].fill(self._step)
@@ -117,14 +120,16 @@ class RecordFullState(Wrapper):
         return obs
 
     def get_full_state(self):
-        full_grid = self.env.grid.encode()
-        full_grid[self.env.agent_pos[0]][self.env.agent_pos[1]] = np.array(
-            [15, self.env.agent_dir, 0])
+        env = self.unwrapped
+        full_grid = env.grid.encode()
+
+        full_grid[env.agent_pos[0]][env.agent_pos[1]] = np.array(
+            [15, env.agent_dir, 0])
         full_grid = full_grid.transpose(1, 0, 2)
         return full_grid
 
     def seed(self, seed=None):
-        self.env.seed(seed=seed)
+        self.unwrapped.seed(seed=seed)
 
 
 class ExploreActions(gym.core.Wrapper):
