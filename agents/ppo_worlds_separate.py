@@ -4,12 +4,55 @@
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch_rl
+from argparse import Namespace
+from copy import deepcopy
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 from utils.format import preprocess_images
+from torch.distributions.categorical import Categorical
+
+
+class HLoss(torch.nn.Module):
+    def __init__(self):
+        super(HLoss, self).__init__()
+
+    def forward(self, x):
+        b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
+        b = -1.0 * b.sum()
+        return b
+
+
+class RandomPolicy(nn.Module, torch_rl.RecurrentACModel):
+    def __init__(self, crt_policy, no_actions, device):
+        super().__init__()
+        self.no_actions = no_actions
+        self.device = device
+        self._memory_size = crt_policy.memory_size
+
+        self.aux = nn.Linear(10, 10)
+
+    @property
+    def memory_size(self):
+        return self._memory_size
+
+    def forward(self, obs, memory):
+        no_actions = self.no_actions
+        device = self.device
+        batch = obs.image.size(0)
+
+        dist = Categorical(probs=torch.rand(batch, no_actions).to(device))
+        vpred_ext = torch.rand(batch).to(device)
+        vpred_int = torch.rand(batch).to(device)
+
+        return dist, (vpred_ext, vpred_int), memory
 
 
 class PPOWorlds(TwoValueHeadsBaseGeneral):
@@ -36,14 +79,23 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         reshape_reward = kwargs.get("reshape_reward", None)
         eval_envs = kwargs.get("eval_envs", [])
 
+        self.connect_worlds = getattr(cfg, "connect_worlds", True)
+        self.env_world_prev_act = getattr(cfg, "env_world_prev_act", False)
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
         self.nminibatches = getattr(cfg, "nminibatches", 4)
         self.out_dir = getattr(cfg, "out_dir", None)
+        self.play_heuristic = play_heuristic = getattr(cfg, "play_heuristic", 0)
+        self.pre_fill_memories = pre_fill_memories = getattr(cfg, "pre_fill_memories", 0)
 
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
+
+        if play_heuristic == 1:
+            no_actions = self.env.action_space.n
+            self.acmodel.policy_model = RandomPolicy(self.acmodel.policy_model, no_actions,
+                                                     self.device)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
@@ -58,9 +110,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.predictor_rms = RunningMeanStd()
         self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
+        # -- Prepare optimizers
         optimizer_args = vars(optimizer_args)
 
-        # -- Prepare optimizers
         self.optimizer_policy = getattr(torch.optim, optimizer)(
             self.acmodel.policy_model.parameters(), **optimizer_args)
 
@@ -85,6 +137,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         if self.running_norm_obs:
             self.collect_random_statistics(50)
+
+        # -- Previous batch of experiences last frame
+        self.prev_frame_exps = None
 
         # -- Init evaluator envs
         self.eval_envs = None
@@ -118,6 +173,76 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.eval_mask = torch.ones(len(obs), device=device)
 
         return eval_envs
+
+    def augment_exp(self, exps):
+        # from exp (P * T , ** ) -> (T, P, **)
+        num_procs = self.num_procs
+        num_frames_per_proc = self.num_frames_per_proc
+        device = self.device
+        env = self.env
+        envworld_network = self.acmodel.envworld_network
+        agworld_network = self.acmodel.agworld_network
+        evaluator_network = self.acmodel.evaluator_network
+
+        shape = torch.Size([num_procs, num_frames_per_proc])
+        frame_exp = Namespace()
+
+        # ------------------------------------------------------------------------------------------
+        # Redo in format T x P
+
+        for k, v in exps.items():
+            if k == "obs":
+                continue
+            setattr(frame_exp, k, v.view(shape + v.size()[1:]).transpose(0, 1).contiguous())
+
+        def inverse_img(t, ii):
+            return torch.transpose(torch.transpose(t, ii, ii+2), ii+1, ii+2).contiguous()
+
+        frame_exp.obs_image = inverse_img(frame_exp.obs_image, 2)
+        frame_exp.states = inverse_img(frame_exp.states, 2)
+
+        def gen_memory(ss):
+            return torch.zeros(num_frames_per_proc, num_procs, ss, device=device)
+
+        frame_exp.envworld_mems = gen_memory(envworld_network.memory_size)
+        frame_exp.agworld_mems = gen_memory(agworld_network.memory_size)
+        frame_exp.agworld_embs = gen_memory(agworld_network.embedding_size)
+
+        frame_exp.actions_onehot = gen_memory(env.action_space.n)
+        frame_exp.actions_onehot.scatter_(2, frame_exp.action.unsqueeze(2).long(), 1.)
+
+        # ------------------------------------------------------------------------------------------
+        # Save last frame exp
+
+        last_frame_exp = Namespace()
+        for k, v in frame_exp.__dict__.items():
+            if k == "obs":
+                continue
+            setattr(last_frame_exp, k, v[-1].clone())
+
+        prev_frame_exps = self.prev_frame_exps
+        if self.prev_frame_exps is None:
+            prev_frame_exps = deepcopy(last_frame_exp)
+            for k, v in prev_frame_exps.__dict__.items():
+                v.zero_()
+
+        self.prev_frame_exps = last_frame_exp
+
+        # ------------------------------------------------------------------------------------------
+        # Fill memories with past
+
+        frame_exp.envworld_mems[0] = prev_frame_exps.envworld_mems
+        frame_exp.agworld_mems[0] = prev_frame_exps.agworld_mems
+        frame_exp.agworld_embs[0] = prev_frame_exps.agworld_embs
+
+        return frame_exp, prev_frame_exps
+
+    @staticmethod
+    def flip_back_experience(exp):
+        # for all tensors below, T x P -> P x T -> P * T
+        for k, v in exp.__dict__.items():
+            setattr(exp, k, v.transpose(0, 1).reshape(-1, *v.shape[2:]).contiguous())
+        return exp
 
     def update_parameters(self):
         # Collect experiences
@@ -207,7 +332,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     # Update Predictor loss
                     #
                     # # Optimize intrinsic reward generator using only a percentage of experiences
-                    # norm_obs = sb.obs.image
+                    # norm_obs = sb.obs_image
                     # obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
                     #
                     # with torch.no_grad():
@@ -274,56 +399,65 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         envworld_network = self.acmodel.envworld_network
         agworld_network = self.acmodel.agworld_network
         evaluator_network = self.acmodel.evaluator_network
+        connect_worlds = self.connect_worlds
+        env_world_prev_act = self.env_world_prev_act
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
         env = self.env
 
+        # ------------------------------------------------------------------------------------------
         # Get observations and full states
         shape = torch.Size([num_procs, num_frames_per_proc])
-        estates = exps.states.view(shape + exps.states.size()[1:]).transpose(0, 1)
+        f, prev_frame_exps = self.augment_exp(exps)
+        # ------------------------------------------------------------------------------------------
 
-        obs_igms = exps.obs.image  # [:, :, :, [0]]
-        eobs = obs_igms.view(shape + obs_igms.size()[1:]).transpose(0, 1)
+        if self.pre_fill_memories:
+            prev_actions = prev_frame_exps.actions_onehot
+            for i in range(num_frames_per_proc - 1):
+                obs = f.obs_image[i]
+                masks = f.mask[i]
 
-        # Transform from B x W x H x C -> B x C x W x H
-        estates = torch.transpose(torch.transpose(estates, 2, 4), 3, 4)
-        eobs = torch.transpose(torch.transpose(eobs, 2, 4), 3, 4)
+                # Do one agent-environment interaction
+                with torch.no_grad():
+                    _, f.agworld_mems[i + 1], f.agworld_embs[i] = \
+                        agworld_network(obs, f.agworld_mems[i] * masks, prev_actions,
+                                        f.actions_onehot[i])
+                    prev_actions = f.actions_onehot[i]
 
-        # From  P x T -> T x P
-        eactions = exps.action.view(shape).transpose(0, 1).long()
-        emasks = exps.mask.view(shape + exps.mask.size()[1:]).transpose(0, 1)
+            envworld_batch_loss = 0
+            loss_m_eworld = torch.nn.MSELoss()
+            prev_actions = prev_frame_exps.actions_onehot
 
-        envworld_mems = torch.zeros(num_frames_per_proc, num_procs,
-                                    envworld_network.memory_size, device=device)
+            for i in range(num_frames_per_proc - 1 - int(connect_worlds)):
+                obs = f.obs_image[i]
+                masks = f.mask[i]
+                next_mask = f.mask[i+1].long().detach()
 
-        agworld_mems = torch.zeros(num_frames_per_proc, num_procs,
-                                   agworld_network.memory_size, device=device)
+                # Do one agent-environment interaction
+                # communicate agent memmory
+                with torch.no_grad():
+                    action_emb = f.agworld_mems[i + 2] if connect_worlds else f.actions_onehot[i]
 
-        agworld_embs = torch.zeros(num_frames_per_proc, num_procs,
-                                   agworld_network.embedding_size, device=device)
+                    obs_predict, f.envworld_mems[i + 1] = \
+                        envworld_network(obs, f.envworld_mems[i] * masks, prev_actions,
+                                         action_emb)
 
-        eactions_onehot = torch.zeros([num_frames_per_proc, num_procs,
-                                       env.action_space.n], device=device)
-        eactions_onehot.scatter_(2, eactions.unsqueeze(2).long(), 1.)
+                    # predict differece in obs
+                    next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
 
-        prev_actions = eactions_onehot[0]  # TODO fix first prev_action! Does Not exist
-        for i in range(num_frames_per_proc - 1):
-            obs = eobs[i]
-            masks = emasks[i]
+                    diff_obs = f.obs_image[i+1][next_mask] - obs[next_mask]
+                    envworld_batch_loss += loss_m_eworld(obs_predict[next_mask], diff_obs)
 
-            # Do one agent-environment interaction
-            with torch.no_grad():
-                obs_predict, envworld_mems[i + 1] = \
-                    envworld_network(obs, envworld_mems[i] * masks, prev_actions,
-                                     eactions_onehot[i])
+                if env_world_prev_act:
+                    prev_actions = f.actions_onehot[i].detach()
 
-                _, agworld_mems[i + 1], agworld_embs[i] = \
-                    agworld_network(obs, agworld_mems[i] * masks, prev_actions, eactions_onehot[i])
-                prev_actions = eactions_onehot[i]
+            loss_first_fwd = (envworld_batch_loss /
+                              (num_frames_per_proc - 1 - int(connect_worlds))).item()
+            print(f"[feop__] {loss_first_fwd:.6f}")
 
-            # TODO add somewhere next memory! to use @ next step
+        # TODO add somewhere next memory! to use @ next step
 
         # ------------------------------------------------------------------------------------------
         # -- Optimize worlds
@@ -334,108 +468,108 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         recurrence_worlds = self.recurrence_worlds
         max_grad_norm = self.max_grad_norm
 
-        # for all tensors below, T x P -> P x T -> P * T
-        envworld_mems = envworld_mems.transpose(0, 1).reshape(-1, *envworld_mems.shape[2:])
-        agworld_mems = agworld_mems.transpose(0, 1).reshape(-1, *agworld_mems.shape[2:])
-        agworld_embs = agworld_embs.transpose(0, 1).reshape(-1, *agworld_embs.shape[2:])
-        eobs = torch.transpose(torch.transpose(obs_igms, 1, 3), 2, 3)
-        estates = estates.transpose(0, 1).view(-1, *estates.size()[2:])
-        eactions = eactions.transpose(0, 1).contiguous().view(-1, *eactions.size()[2:])
-        eactions_onehot = eactions_onehot.transpose(0, 1).reshape(-1, *eactions_onehot.shape[2:])
+        # ------------------------------------------------------------------------------------------
+        # _________ for all tensors below, T x P -> P x T -> P * T _______________________
+        f = self.flip_back_experience(f)
+        # ------------------------------------------------------------------------------------------
 
         loss_m_eworld = torch.nn.MSELoss()
         loss_m_aworld = torch.nn.CrossEntropyLoss()
+        loss_m_ah = HLoss()
+        loss_m_ah_eval = torch.nn.CrossEntropyLoss()
         loss_m_eval = torch.nn.MSELoss()
 
         log_envworld_loss = []
+        envworld_batch_loss_sames = []
+        envworld_batch_loss_diffs = []
         log_agworld_loss = []
+        log_agh_loss = []
+        log_agh_eval_loss = []
         log_evaluator_loss = []
 
-        # # Test 2 step action pred
-        # print(eobs.size())
-        # print(eactions_onehot.size())
-        # for inds in self._get_batches_starting_indexes(recurrence=2):
-        #     agworld_mem = agworld_mems[inds]
-        #     agworld_emb = agworld_embs[inds]
-        #     new_agworld_emb = [None] * recurrence_worlds
-        #     new_agworld_mem = [None] * recurrence_worlds
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #
-        #     # # -- Optimize agworld model
-        #     # agworld_batch_loss /= recurrence_worlds
-        #     #
-        #     # optimizer_agworld.zero_grad()
-        #     # agworld_batch_loss.backward()
-        #     # grad_norm = sum(
-        #     #     p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
-        #     #     if p.grad is not None
-        #     # ) ** 0.5
-        #     # torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-        #     # optimizer_agworld.step()
-        #     #
-        #     # log_agworld_loss.append(agworld_batch_loss.item())
-        #
-        #     # Forward pass Agent Net for memory
-        #     i = 0
-        #     sb = exps[inds + i]
-        #     agworld_mem = agworld_mems[inds]
-        #     obs = eobs[inds + i].detach()
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #
-        #     _, agworld_mem_0, embedding_0 = \
-        #         agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
-        #
-        #     i = 1
-        #     sb = exps[inds + i]
-        #     obs = eobs[inds + i].detach()
-        #     prev_actions_one = eactions_onehot[inds + i].detach()
-        #     crt_actions = eactions_onehot[inds + i + 1].detach()
-        #     crt_actions_long = eactions[inds + i + 1].detach()
-        #
-        #     _, agworld_mem_1, embedding_1 = \
-        #         agworld_network(obs, agworld_mem_0 * sb.mask, prev_actions_one, crt_actions)
-        #
-        #     pred_act = agworld_network.forward_action(embedding_0, embedding_1)
-        #     agworld_batch_loss = loss_m_aworld(pred_act, crt_actions_long)
-        #
-        #     # -- Optimize agworld model
-        #     optimizer_agworld.zero_grad()
-        #     agworld_batch_loss.backward()
-        #     grad_norm = sum(
-        #         p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
-        #         if p.grad is not None
-        #     ) ** 0.5
-        #     torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-        #     optimizer_agworld.step()
-        #     log_agworld_loss.append(agworld_batch_loss.item())
-
+        btch = -1
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
+            btch += 1
 
-            envworld_mem = envworld_mems[inds]
-            agworld_mem = agworld_mems[inds]
-            agworld_emb = agworld_embs[inds]
+            envworld_mem = f.envworld_mems[inds].detach()
+            agworld_mem = f.agworld_mems[inds].detach()
+            agworld_emb = f.agworld_embs[inds].detach()
             new_agworld_emb = [None] * recurrence_worlds
             new_agworld_mem = [None] * recurrence_worlds
 
             envworld_batch_loss = 0
+            envworld_batch_loss_same = 0
+            envworld_batch_loss_diff = 0
             agworld_batch_loss = 0
+            agh_batch_loss = torch.zeros(1)[0]
+            agh_eval_batch_loss = torch.zeros(1)[0]
             evaluator_batch_loss = 0
 
+            grad_envworld_norm = []
+
             # TODO not all recurrence is done ?! Must need next state + obs
+            # -- Agent world
             for i in range(recurrence_worlds):
-                sb = exps[inds + i]
-                obs = eobs[inds + i].detach()
-                crt_full_state = estates[inds + i].detach()
-                next_obs = eobs[inds + i + 1].detach()
-                prev_actions_one = eactions_onehot[inds + i - 1].detach()
-                crt_actions = eactions_onehot[inds + i].detach()
+                obs = f.obs_image[inds + i].detach()
+                mask = f.mask[inds + i]
+                prev_actions_one = f.actions_onehot[inds + i - 1].detach()
+                crt_actions = f.actions_onehot[inds + i].detach()
+
+                # Forward pass Agent Net for memory
+                _, agworld_mem, new_agworld_emb[i] = \
+                    agworld_network(obs, agworld_mem * mask, prev_actions_one, crt_actions)
+                new_agworld_mem[i] = agworld_mem
+
+            # Go back and predict action given embeddint(t) & embedding (t+1)
+            for i in range(recurrence_worlds-1):
+                crt_actions = f.action[inds + i].long().detach()
+
+                pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
+                agworld_batch_loss += loss_m_aworld(pred_act, crt_actions.detach())
+
+                # pred_act = agworld_network.forward_action(new_agworld_emb[i].detach(),
+                #                                           new_agworld_emb[i+1])
+                # # agh_batch_loss += loss_m_aworld(pred_act, crt_actions.detach())
+                # agh_batch_loss += loss_m_ah(pred_act)
+                #
+                # pred_act = agworld_network.forward_action_eval(new_agworld_emb[i+1].detach(),
+                #                                                new_agworld_emb[i+1].detach())
+                # agh_eval_batch_loss += loss_m_ah_eval(pred_act, crt_actions.detach())
+
+            # -- ENV world
+            prev_actions_one = prev_frame_exps.actions_onehot
+
+            for i in range(recurrence_worlds - int(connect_worlds)):
+                mask = f.mask[inds + i]
+                obs = f.obs_image[inds + i].detach()
+                crt_full_state = f.states[inds + i].detach()
+                next_obs = f.obs_image[inds + i + 1].detach()
+                next_mask = f.mask[inds + i + 1].long().detach()
+
+                if env_world_prev_act:
+                    prev_actions_one = f.actions_onehot[inds + i - 1].detach()
+                crt_actions = f.actions_onehot[inds + i].detach()
+
+                # communicate agent memmory
+                action_emb = new_agworld_mem[i + 1] if connect_worlds else crt_actions
 
                 # Compute loss for env world
                 obs_predict, envworld_mem = \
-                    envworld_network(obs, envworld_mem * sb.mask, prev_actions_one, crt_actions)
-                envworld_batch_loss += loss_m_eworld(obs_predict, next_obs)
+                    envworld_network(obs, envworld_mem * mask, prev_actions_one,
+                                     action_emb)
+
+                # select only states with future state
+                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
+
+                diff_obs = (next_obs[next_mask] - obs[next_mask]).detach()
+                s_obs_predict = obs_predict[next_mask]
+                envworld_batch_loss += loss_m_eworld(s_obs_predict, diff_obs)
+
+                same = (obs[next_mask] == next_obs[next_mask]).all(1).all(1).all(1)
+
+                envworld_batch_loss_same += loss_m_eworld(s_obs_predict[same], diff_obs[same])
+                envworld_batch_loss_diff += loss_m_eworld(s_obs_predict[~same], diff_obs[~same])
+
 
                 # TODO Update memories for next epoch
                 # # Update memories for next epoch
@@ -446,62 +580,62 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 pred_full_state = evaluator_network(envworld_mem.detach())
                 evaluator_batch_loss += loss_m_eval(pred_full_state, crt_full_state)
 
-                # Forward pass Agent Net for memory
-                _, agworld_mem, new_agworld_emb[i] = \
-                    agworld_network(obs, agworld_mem * sb.mask, prev_actions_one, crt_actions)
-                new_agworld_mem[i] = agworld_mem
-
-            # Go back and predict action given embeddint(t) & embedding (t+1)
-            for i in range(recurrence_worlds-1):
-                # prev_actions = eactions[inds + i].detach()
-                crt_actions = eactions[inds + i].detach()
-
-                pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
-                agworld_batch_loss += loss_m_aworld(pred_act, crt_actions)
-
-            # -- Optimize world model
+            # -- Optimize models
             envworld_batch_loss /= recurrence_worlds
-
-            optimizer_envworld.zero_grad()
-            envworld_batch_loss.backward()
-            grad_norm = sum(
-                p.grad.data.norm(2).item() ** 2 for p in envworld_network.parameters()
-                if p.grad is not None
-            ) ** 0.5
-            torch.nn.utils.clip_grad_norm_(envworld_network.parameters(), max_grad_norm)
-            optimizer_envworld.step()
-
-            log_envworld_loss.append(envworld_batch_loss.item())
-
-            # -- Optimize evaluator model
+            envworld_batch_loss_same /= recurrence_worlds
+            envworld_batch_loss_diff /= recurrence_worlds
+            agworld_batch_loss /= recurrence_worlds
+            # agh_batch_loss /= recurrence_worlds
+            # agh_eval_batch_loss /= recurrence_worlds
             evaluator_batch_loss /= recurrence_worlds
 
-            optimizer_evaluator.zero_grad()
-            evaluator_batch_loss.backward()
-            grad_norm = sum(
-                p.grad.data.norm(2).item() ** 2 for p in evaluator_network.parameters()
-                if p.grad is not None
-            ) ** 0.5
-            torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
-            optimizer_evaluator.step()
-
-            log_evaluator_loss.append(evaluator_batch_loss.item())
-
-            # -- Optimize agworld model
-            agworld_batch_loss /= recurrence_worlds
+            # ag_loss = (agworld_batch_loss - agh_batch_loss)
+            # w_loss = agworld_batch_loss - agh_batch_loss * 1.0 \
+            #          + envworld_batch_loss * 10 + agh_eval_batch_loss
+            w_loss = agworld_batch_loss + envworld_batch_loss * 1
 
             optimizer_agworld.zero_grad()
-            agworld_batch_loss.backward()
-            grad_norm = sum(
+            optimizer_envworld.zero_grad()
+            optimizer_evaluator.zero_grad()
+
+            # ag_loss.backward(retain_graph=connect_worlds)
+            # envworld_batch_loss.backward()
+            w_loss.backward()
+            evaluator_batch_loss.backward()
+
+            grad_envworld_norm.append(sum(
+                p.grad.data.norm(2).item() ** 2 for p in envworld_network.parameters()
+                if p.grad is not None
+            ) ** 0.5)
+            grad_agworld_norm = sum(
                 p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
                 if p.grad is not None
             ) ** 0.5
+            grad_eval_norm = sum(
+                p.grad.data.norm(2).item() ** 2 for p in evaluator_network.parameters()
+                if p.grad is not None
+            ) ** 0.5
+
+            torch.nn.utils.clip_grad_norm_(envworld_network.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
             torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-            optimizer_agworld.step()
 
             log_agworld_loss.append(agworld_batch_loss.item())
+            log_agh_loss.append(agh_batch_loss.item())
+            log_agh_eval_loss.append(agh_eval_batch_loss.item())
+            log_envworld_loss.append(envworld_batch_loss.item())
+            envworld_batch_loss_sames.append(envworld_batch_loss_same.item())
+            envworld_batch_loss_diffs.append(envworld_batch_loss_diff.item())
+            log_evaluator_loss.append(evaluator_batch_loss.item())
+
+            optimizer_envworld.step()
+            optimizer_evaluator.step()
+            optimizer_agworld.step()
 
         # ------------------------------------------------------------------------------------------
+        print(f"[ewgMea] {np.mean(grad_envworld_norm):.6f} "
+              f"[ewgMax] {np.max(grad_envworld_norm):.6f} "
+              f"[ewgStd] {np.std(grad_envworld_norm):.6f} ")
 
         # Log some values
 
@@ -517,7 +651,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         logs["envworld_loss"] = np.mean(log_envworld_loss)
         logs["agworld_loss"] = np.mean(log_agworld_loss)
+        logs["agh_loss"] = np.mean(log_agh_loss)
+        logs["agh_eval_loss"] = np.mean(log_agh_eval_loss)
         logs["evaluator_loss"] = np.mean(log_evaluator_loss)
+
+        print(f"[same_o] {np.mean(envworld_batch_loss_sames):.6f} "
+              f"[diff_o] {np.mean(envworld_batch_loss_diffs):.6f}")
 
         self.updates_cnt += 1
 
@@ -632,18 +771,18 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         return
 
         if self.running_norm_obs:
-            obs = exps.obs.image * 15.0  # horrible harcoded normalized factor
+            obs = exps.obs_image * 15.0  # horrible harcoded normalized factor
             # normalize the observations for predictor and target networks
             norm_obs = torch.clamp(
                 torch.div(
-                    (obs - self.obs_rms.mean.to(exps.obs.image.device)),
-                    torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
+                    (obs - self.obs_rms.mean.to(exps.obs_image.device)),
+                    torch.sqrt(self.obs_rms.var).to(exps.obs_image.device)),
                 -5.0, 5.0)
 
             self.obs_rms.update(obs.cpu())  # update running mean
         else:
             # Without norm
-            norm_obs = exps.obs.image
+            norm_obs = exps.obs_image
 
         obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
 
@@ -676,6 +815,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                        for i in range(self.num_frames_per_proc)]
 
         exps.states = preprocess_images(full_states, device=self.device)
+        exps.obs_image = exps.obs.image
 
     def evaluate(self):
         out_dir = self.eval_dir
@@ -687,6 +827,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         evaluator_network = self.acmodel.evaluator_network
         envworld_network = self.acmodel.envworld_network
         agworld_network = self.acmodel.agworld_network
+        connect_worlds = self.connect_worlds
+        env_world_prev_act = self.env_world_prev_act
 
         updates_cnt = self.updates_cnt
 
@@ -698,19 +840,34 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         envworld_mem = self.eval_env_memory.zero_()
         eval_ag_memory = self.eval_ag_memory.zero_()
 
-        prev_actions = torch.zeros((len(obs), env.action_space.n), device=device)
+        prev_actions_e = torch.zeros((len(obs), env.action_space.n), device=device)
+        prev_actions_a = torch.zeros((len(obs), env.action_space.n), device=device)
         crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
         pred_act = torch.zeros((len(obs), env.action_space.n), device=device)
 
         new_agworld_emb = None
         prev_agworld_mem = None
+        obs_predict = None
+        obs_batch = None
+        loss_m_eworld = torch.nn.MSELoss()
 
         transitions = []
-        for i in range(200):
+        envworld_batch_loss = 0
+        steps = 200
+
+        for i in range(steps):
+
+            prev_obs = obs_batch
             preprocessed_obs = preprocess_obss(obs, device=device)
             obs_batch = torch.transpose(torch.transpose(preprocessed_obs.image, 1, 3), 2, 3)
 
+            if obs_predict is not None:
+                m = mask.squeeze(1).type(torch.ByteTensor)
+                diff_obs = obs_batch[m] - prev_obs[m]
+                envworld_batch_loss += loss_m_eworld(obs_predict[m], diff_obs)
+
             with torch.no_grad():
+            # if True:
                 # Policy
 
                 if recurrent:
@@ -719,11 +876,14 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     dist, value = acmodel(preprocessed_obs)
 
                 action = dist.sample()
+                crt_actions.zero_()
                 crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)
 
                 # Env world
-                obs_predic, envworld_mem = envworld_network(obs_batch, envworld_mem * mask,
-                                                            prev_actions, crt_actions)
+                action_embedding = eval_ag_memory if connect_worlds else crt_actions
+
+                obs_predict, envworld_mem = envworld_network(obs_batch, envworld_mem * mask,
+                                                             prev_actions_e, action_embedding)
 
                 # Evaluation network
                 pred_full_state = evaluator_network(envworld_mem.detach())
@@ -731,7 +891,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 # Agent world
                 _, eval_ag_memory, new_agworld_emb = agworld_network(obs_batch,
                                                                      eval_ag_memory * mask,
-                                                                     prev_actions, crt_actions)
+                                                                     prev_actions_a, crt_actions)
                 if prev_agworld_mem is not None:
                     pred_act = agworld_network.forward_action(prev_agworld_mem, new_agworld_emb)
 
@@ -741,20 +901,28 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             mask = (1 - torch.tensor(done, device=device, dtype=torch.float)).unsqueeze(1)
 
-            prev_actions.copy_(crt_actions)
+            if env_world_prev_act:
+                prev_actions_e.copy_(crt_actions)
 
-            transitions.append((obs, action, reward, done, next_obs, dist.probs.cpu(),
-                                pred_full_state.cpu(), obs_predic.cpu(), envworld_mem.cpu(),
-                                eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu()))
+            prev_actions_a.copy_(crt_actions)
+
+            transitions.append((obs, action.cpu(), reward, done, next_obs, dist.probs.cpu(),
+                                pred_full_state.cpu(), obs_predict.cpu(), envworld_mem.cpu(),
+                                eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu(),
+                                obs_batch.cpu()))
+
 
             obs = next_obs
+
+        print(f"[evalop] {(envworld_batch_loss/steps).item():.6f}")
 
         if out_dir is not None:
             np.save(f"{out_dir}/eval_{updates_cnt}",
                     {"transitions": transitions,
                      "columns": ["obs", "action", "reward", "done", "next_obs", "probs",
-                                 "pred_full_state", "obs_predic", "envworld_mem",
-                                 "eval_ag_memory", "new_agworld_emb", "pred_act"]})
+                                 "pred_full_state", "obs_predict", "envworld_mem",
+                                 "eval_ag_memory", "new_agworld_emb", "pred_act",
+                                 "obs_batch"]})
 
         return None
 

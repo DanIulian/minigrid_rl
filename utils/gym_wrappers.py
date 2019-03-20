@@ -7,6 +7,7 @@ from copy import deepcopy
 from gym import Wrapper
 from optparse import OptionParser
 import time
+import math
 
 try:
     import gym_minigrid
@@ -16,6 +17,14 @@ except ImportError:
 
 def include_full_state(env):
     return RecordFullState(env)
+
+
+def get_action_bonus_only(env):
+    return ActionBonus(env, only_bonus=True)
+
+
+def get_action_bonus(env):
+    return ActionBonus(env, only_bonus=True)
 
 
 class RecordingBehaviour(Wrapper):
@@ -82,17 +91,26 @@ class RecordingBehaviour(Wrapper):
 class RecordFullState(Wrapper):
     def __init__(self, env):
         super(RecordFullState, self).__init__(env)
+        self._step = np.random.randint(155)
 
     def step(self, action):
+        self._step += 1
 
         observation, reward, done, info = self.env.step(action)
+
+        # observation["image"] = observation["image"].astype(np.int)
+        # observation["image"].fill((action + 1)*2)
 
         observation["state"] = self.get_full_state()
 
         return observation, reward, done, info
 
     def reset(self, **kwargs):
+        self._step = np.random.randint(155)
         obs = self.env.reset(**kwargs)
+
+        # obs["image"] = obs["image"].astype(np.int)
+        # obs["image"].fill(self._step)
 
         obs["state"] = self.get_full_state()
 
@@ -155,32 +173,41 @@ class ExploreActions(gym.core.Wrapper):
         return v / v.sum()
 
 
-class ExplorePositions(gym.core.Wrapper):
+class ActionBonus(gym.core.Wrapper):
     """
-        Store exploration data.
+    source @ gym_minigrid repo
+    Wrapper which adds an exploration bonus.
+    This is a reward to encourage exploration of less
+    visited (state,action) pairs.
     """
 
-    def __init__(self, env):
+    def __init__(self, env, only_bonus=False):
         super().__init__(env)
         self.counts = {}
+        self.only_bonus = only_bonus
 
     def step(self, action):
 
         obs, reward, done, info = self.env.step(action)
 
-        # Tuple based on which we index the counts
-        # We use the position after an update
         env = self.unwrapped
-        tup = (env.agent_pos)
+        tup = (env.agentPos, env.agentDir, action)
 
-        # Get the count for this key
+        # Get the count for this (s,a) pair
         preCnt = 0
         if tup in self.counts:
             preCnt = self.counts[tup]
 
-        # Update the count for this key
+        # Update the count for this (s,a) pair
         newCnt = preCnt + 1
         self.counts[tup] = newCnt
+
+        bonus = 1 / math.sqrt(newCnt)
+
+        if self.only_bonus:
+            reward = 0
+
+        reward += bonus
 
         return obs, reward, done, info
 
