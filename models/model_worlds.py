@@ -257,22 +257,25 @@ class AgentWorld(nn.Module):
         m = obs_space["image"][1]
 
         hidden_size = 512  # getattr(cfg, "hidden_size", 256)
-        self._memory_size = memory_size = 256  # getattr(cfg, "memory_size", 256)
+        self._memory_size = memory_size = 512  # getattr(cfg, "memory_size", 256)
         channels = 3
         self.action_space = torch.Size((action_space.n, ))
 
         out_size = n * m * channels
 
         self.image_conv = nn.Sequential(
-            nn.Conv2d(channels, 16, (2, 2)),
+            nn.Conv2d(channels, 16, (3, 3)),
+            nn.BatchNorm2d(16),
             nn.LeakyReLU(),
             nn.Conv2d(16, 32, (2, 2)),
+            nn.BatchNorm2d(32),
             nn.LeakyReLU(),
             nn.Conv2d(32, 64, (2, 2)),
+            nn.BatchNorm2d(64),
             nn.LeakyReLU(),
         )
 
-        image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+        image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
 
         # Consider embedding out of fc1
         self.fc1 = nn.Sequential(
@@ -286,10 +289,9 @@ class AgentWorld(nn.Module):
 
         self.fc2 = nn.Sequential(
             nn.Linear(memory_size + embedding_size, memory_size),
-            # nn.Linear(hidden_size + hidden_size, memory_size),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(memory_size, memory_size),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(memory_size, action_space.n),
             # nn.ReLU()
         )

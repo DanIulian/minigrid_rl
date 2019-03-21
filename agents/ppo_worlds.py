@@ -412,7 +412,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         shape = torch.Size([num_procs, num_frames_per_proc])
         f, prev_frame_exps = self.augment_exp(exps)
         # ------------------------------------------------------------------------------------------
-
+        envworld_loss_fwd_pass = -1
         if self.pre_fill_memories:
             prev_actions = prev_frame_exps.actions_onehot
             for i in range(num_frames_per_proc - 1):
@@ -453,9 +453,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 if env_world_prev_act:
                     prev_actions = f.actions_onehot[i].detach()
 
-            loss_first_fwd = (envworld_batch_loss /
-                              (num_frames_per_proc - 1 - int(connect_worlds))).item()
-            print(f"[feop__] {loss_first_fwd:.6f}")
+            envworld_loss_fwd_pass = (envworld_batch_loss /
+                                      (num_frames_per_proc - 1 - int(connect_worlds))).item()
 
         # TODO add somewhere next memory! to use @ next step
 
@@ -482,12 +481,18 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         log_envworld_loss = []
         envworld_batch_loss_sames = []
         envworld_batch_loss_diffs = []
+        agworld_batch_loss_sames = []
+        agworld_batch_loss_diffs = []
         log_agworld_loss = []
         log_agh_loss = []
         log_agh_eval_loss = []
         log_evaluator_loss = []
 
         btch = -1
+        grad_envworld_norm = []
+        grad_agworld_norm = []
+        grad_eval_norm = []
+
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
             btch += 1
 
@@ -498,6 +503,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             new_agworld_mem = [None] * recurrence_worlds
 
             envworld_batch_loss = 0
+            agworld_batch_loss_same = 0
+            agworld_batch_loss_diff = 0
             envworld_batch_loss_same = 0
             envworld_batch_loss_diff = 0
             agworld_batch_loss = 0
@@ -505,7 +512,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             agh_eval_batch_loss = torch.zeros(1)[0]
             evaluator_batch_loss = 0
 
-            grad_envworld_norm = []
 
             # TODO not all recurrence is done ?! Must need next state + obs
             # -- Agent world
@@ -522,10 +528,24 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             # Go back and predict action given embeddint(t) & embedding (t+1)
             for i in range(recurrence_worlds-1):
+                obs = f.obs_image[inds + i].detach()
+                next_obs = f.obs_image[inds + i + 1].detach()
+
+                next_mask = f.mask[inds + i + 1].long().detach()
+                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
+
                 crt_actions = f.action[inds + i].long().detach()
 
                 pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
-                agworld_batch_loss += loss_m_aworld(pred_act, crt_actions.detach())
+                agworld_batch_loss += loss_m_aworld(pred_act[next_mask],
+                                                    crt_actions[next_mask].detach())
+
+                same = (obs[next_mask] == next_obs[next_mask]).all(1).all(1).all(1)
+                s_act_predict = pred_act[next_mask]
+                s_crt_actions = crt_actions[next_mask]
+
+                agworld_batch_loss_same += loss_m_aworld(s_act_predict[same], s_crt_actions[same])
+                agworld_batch_loss_diff += loss_m_aworld(s_act_predict[~same], s_crt_actions[~same])
 
                 # pred_act = agworld_network.forward_action(new_agworld_emb[i].detach(),
                 #                                           new_agworld_emb[i+1])
@@ -584,6 +604,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             envworld_batch_loss /= recurrence_worlds
             envworld_batch_loss_same /= recurrence_worlds
             envworld_batch_loss_diff /= recurrence_worlds
+            agworld_batch_loss_same /= recurrence_worlds
+            agworld_batch_loss_diff /= recurrence_worlds
             agworld_batch_loss /= recurrence_worlds
             # agh_batch_loss /= recurrence_worlds
             # agh_eval_batch_loss /= recurrence_worlds
@@ -607,14 +629,14 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 p.grad.data.norm(2).item() ** 2 for p in envworld_network.parameters()
                 if p.grad is not None
             ) ** 0.5)
-            grad_agworld_norm = sum(
+            grad_agworld_norm.append(sum(
                 p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
                 if p.grad is not None
-            ) ** 0.5
-            grad_eval_norm = sum(
+            ) ** 0.5)
+            grad_eval_norm.append(sum(
                 p.grad.data.norm(2).item() ** 2 for p in evaluator_network.parameters()
                 if p.grad is not None
-            ) ** 0.5
+            ) ** 0.5)
 
             torch.nn.utils.clip_grad_norm_(envworld_network.parameters(), max_grad_norm)
             torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
@@ -626,6 +648,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             log_envworld_loss.append(envworld_batch_loss.item())
             envworld_batch_loss_sames.append(envworld_batch_loss_same.item())
             envworld_batch_loss_diffs.append(envworld_batch_loss_diff.item())
+            agworld_batch_loss_sames.append(agworld_batch_loss_same.item())
+            agworld_batch_loss_diffs.append(agworld_batch_loss_diff.item())
             log_evaluator_loss.append(evaluator_batch_loss.item())
 
             optimizer_envworld.step()
@@ -633,10 +657,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             optimizer_agworld.step()
 
         # ------------------------------------------------------------------------------------------
-        print(f"[ewgMea] {np.mean(grad_envworld_norm):.6f} "
-              f"[ewgMax] {np.max(grad_envworld_norm):.6f} "
-              f"[ewgStd] {np.std(grad_envworld_norm):.6f} ")
-
         # Log some values
 
         logs["entropy"] = np.mean(log_entropies)
@@ -650,13 +670,30 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         logs["grad_norm"] = np.mean(log_grad_norms)
 
         logs["envworld_loss"] = np.mean(log_envworld_loss)
+
         logs["agworld_loss"] = np.mean(log_agworld_loss)
         logs["agh_loss"] = np.mean(log_agh_loss)
         logs["agh_eval_loss"] = np.mean(log_agh_eval_loss)
         logs["evaluator_loss"] = np.mean(log_evaluator_loss)
 
-        print(f"[same_o] {np.mean(envworld_batch_loss_sames):.6f} "
-              f"[diff_o] {np.mean(envworld_batch_loss_diffs):.6f}")
+        # Gradient log
+        logs["envworld_grad_mean"] = np.mean(grad_envworld_norm)
+        logs["envworld_grad_max"] = np.max(grad_envworld_norm)
+        logs["envworld_grad_std"] = np.std(grad_envworld_norm)
+        logs["agworld_grad_mean"] = np.mean(grad_agworld_norm)
+        logs["agworld_grad_max"] = np.max(grad_agworld_norm)
+        logs["agworld_grad_std"] = np.std(grad_agworld_norm)
+        logs["eval_grad_mean"] = np.mean(grad_eval_norm)
+        logs["eval_grad_max"] = np.max(grad_eval_norm)
+        logs["eval_grad_std"] = np.std(grad_eval_norm)
+
+        # Split losses
+        logs["envworld_loss_same"] = np.mean(envworld_batch_loss_sames)
+        logs["envworld_loss_diff"] = np.mean(envworld_batch_loss_diffs)
+        logs["agworld_loss_same"] = np.mean(agworld_batch_loss_sames)
+        logs["agworld_loss_diff"] = np.mean(agworld_batch_loss_diffs)
+
+        logs["envworld_loss_fwd_pass"] = envworld_loss_fwd_pass
 
         self.updates_cnt += 1
 
