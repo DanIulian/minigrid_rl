@@ -54,7 +54,6 @@ def play_game():
 
 
 def main(file_path):
-    file_path = "results/2019Mar20-112620_default/eval/eval_30.npy" if file_path is None else file_path
 
     data = np.load(file_path).item()
     columns = data["columns"]
@@ -64,7 +63,7 @@ def main(file_path):
 
     env_id = 0
     steps = 200
-
+    max_df = len(df)
     for i in range(200):
         state = np.array(df.iloc[i]["obs"][env_id]["state"])
         obs = np.array(df.iloc[i]["obs"][env_id]["image"])
@@ -90,7 +89,12 @@ def main(file_path):
         view_full_state("pred_diff", pred_diff)
         view_full_state("pred_obs", pred_obs)
         cv2.waitKey(0)
-        print(df.iloc[i]['action'][env_id])
+        if i < max_df:
+            action = df.iloc[i]['action'][env_id].item()
+            pred_act = df.iloc[i+1]['pred_act'][env_id].numpy()
+            print(f"[T_A] {action:.2f} [A_p] {pred_act[action]:.2f}")
+            print(f"[M_a] {pred_act.argmax():.2f} [M_p] {pred_act.max():.2f}")
+            print("Pred:", pred_act.tolist())
 
 
     # loss_m_eworld = torch.nn.MSELoss()
