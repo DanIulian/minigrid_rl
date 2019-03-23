@@ -88,6 +88,8 @@ class PPORND(TwoValueHeadsBase):
             log_value_ext_losses = []
             log_value_int_losses = []
             log_grad_norms = []
+            log_ret_int = []
+            log_rew_int = []
             for inds in self._get_batches_starting_indexes():
                 # Initialize batch values
 
@@ -98,6 +100,8 @@ class PPORND(TwoValueHeadsBase):
                 batch_value_ext_loss = 0
                 batch_value_int_loss = 0
                 batch_loss = 0
+                batch_ret_int = 0
+                batch_rew_int = 0
 
                 # Initialize memory
 
@@ -149,6 +153,9 @@ class PPORND(TwoValueHeadsBase):
                     batch_value_ext_loss += value_ext_loss.item()
                     batch_value_int_loss += value_int_loss.item()
                     batch_loss += loss
+                    batch_ret_int += sb.returnn_int.mean().item()
+                    batch_rew_int += sb.reward_int.mean().item()
+
 
                     # Update memories for next epoch
 
@@ -196,6 +203,8 @@ class PPORND(TwoValueHeadsBase):
                 batch_value_ext_loss /= self.recurrence
                 batch_value_int_loss /= self.recurrence
                 batch_loss /= self.recurrence
+                batch_rew_int /= self.recurrence
+                batch_ret_int /= self.recurrence
 
                 # Update actor-critic
 
@@ -218,6 +227,8 @@ class PPORND(TwoValueHeadsBase):
                 log_value_ext_losses.append(batch_value_ext_loss)
                 log_value_int_losses.append(batch_value_int_loss)
                 log_grad_norms.append(grad_norm)
+                log_ret_int.append(batch_ret_int)
+                log_rew_int.append((batch_rew_int))
 
         # Log some values
 
@@ -230,6 +241,8 @@ class PPORND(TwoValueHeadsBase):
         logs["value_int_loss"] = numpy.mean(log_value_int_losses)
         logs["value_loss"] = logs["value_int_loss"] + logs["value_ext_loss"]
         logs["grad_norm"] = numpy.mean(log_grad_norms)
+        logs["return_int"] = numpy.mean(log_ret_int)
+        logs["reward_int"] = numpy.mean(log_rew_int)
 
         return logs
 
@@ -319,7 +332,7 @@ class PPORND(TwoValueHeadsBase):
         """
         if self.running_norm_obs:
             obs = exps.obs.image * 15.0  # horrible harcoded normalized factor
-            # nurmalize the observations for predictor and target networks
+            # normalize the observations for predictor and target networks
             norm_obs = torch.clamp(
                 torch.div(
                     (obs - self.obs_rms.mean.to(exps.obs.image.device)),
