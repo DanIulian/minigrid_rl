@@ -8,6 +8,7 @@ from gym import Wrapper
 from optparse import OptionParser
 import time
 import math
+import collections
 
 try:
     import gym_minigrid
@@ -132,6 +133,27 @@ class RecordFullState(Wrapper):
         self.unwrapped.seed(seed=seed)
 
 
+def bfs(grid, start, target):
+    move = np.array([[+1, 0], [-1, 0], [0, +1], [0, -1]])
+    height, width = grid.shape
+
+    queue = collections.deque([[start]])
+    seen = set([start])
+    while queue:
+        path = queue.popleft()
+        x, y = path[-1]
+        if y == target[0] and x == target[1]:
+            return path
+
+        new = move + np.array([x, y])
+        test = new[np.argsort(np.linalg.norm(new - target, axis=1))]  # Sort by distance to target
+        for x2, y2 in test:
+            if 0 <= x2 < width and 0 <= y2 < height and grid[y2][x2] != 1 and (x2, y2) not in seen:
+                queue.append(path + [(x2, y2)])
+                seen.add((x2, y2))
+    return None
+
+
 class ExploreActions(gym.core.Wrapper):
     """
         Store exploration data.
@@ -140,36 +162,100 @@ class ExploreActions(gym.core.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.counts = {}
+        self.memory_len = 10
+
+        # Keep a list of min state, action options found
+        self.idxs_counts = np.zeros(self.memory_len)
+        self.idxs_counts.fill(9999)  # Fill with big number
+        self.min_count_idx = -1
+
+        self.idx = [None] * self.memory_len
+        self.max_min_count = 0
+        self.max_action = self.unwrapped.action_space.n
+
+        parent_class = env
 
     def step(self, action):
-        counts = self.counts
-        env = self.unwrapped
-        tup = (tuple(env.agent_pos), env.agent_dir, action, env.carrying)
+        self.add_state_count(action)
 
         obs, reward, done, info = self.env.step(action)
 
-        # Get the count for this (s,a) pair
-        preCnt = 0
-        if tup in counts:
-            preCnt = counts[tup]
-
-        # Update the count for this (s,a) pair
-        newCnt = preCnt + 1
-        counts[tup] = newCnt
-
         return obs, reward, done, info
+
+    def add_state_count(self, action):
+        counts = self.counts
+        env = self.unwrapped
+        tup = (tuple(env.agent_pos), env.agent_dir, env.carrying)
+
+        # Update the count for this (s, a) pair
+        counts = None
+        if tup in counts:
+            counts = counts[tup]
+        else:
+            counts[tup] = counts = np.zeros(self.max_action)
+
+        counts[action] += 1
+
+        # Update list of min state, action options
+        min_count = counts.min()
+        if self.max_min_count > min_count:
+            idxs_counts = self.idxs_counts
+            change = np.argmax(self.idxs_counts)
+            idxs_counts[change] = min_count
+            self.idx[change] = tup
+            self.max_min_count = np.max(idxs_counts)
+            self.min_count_idx = np.argmin(idxs_counts)
+
+    def get_to_state(self, origin, target):
+        origin_pos, origin_dir, orgin_carrying = origin
+        target_pos, target_dir, target_carrying = origin
+
+        if target_carrying != orgin_carrying:
+            # Go to item
+            target_pos = None
+
+        if origin_pos == target_pos:
+            if origin_dir != target_dir:
+                return None # get action for rotation:
+            else:
+                return np.random.randint(self.max_action)  # You are here
+
+        # Get to coord
+        grid = None  # TODO generate occupancy grid (1 - obstacle. 0 - free)
+
+        path = bfs(grid, origin_pos, target_pos)
+
+    def min_state_explore(self):
+        """ Get action that gets the agent to a min count state """
+        env = self.unwrapped
+        counts = self.counts
+
+        crt = (tuple(env.agent_pos), env.agent_dir, env.carrying)
+        if crt in counts:
+            min_crt = counts[crt].min()
+            min_count_idx = self.min_count_idx
+            if min_crt <= self.idxs_counts[min_count_idx]:
+                p = counts[crt]  # Return this state's count
+            else:
+                # distribution over actions that get the agent to min state count option
+                min_state = self.idx[min_count_idx]
+                pass
+        else:
+            p = np.ones(self.max_action)
+
+        return p / p.sum()
 
     def get_next_action_cnt(self):
         env = self.unwrapped
         counts = self.counts
+        n_act = self.max_action
 
-        n_act = env.action_space.n
-        v = np.zeros(n_act)
+        tup = (tuple(env.agent_pos), env.agent_dir, env.carrying)
+        if tup in counts:
+            v = counts[tup]
+        else:
+            v = np.zeros(n_act)
 
-        for action in range(env.action_space.n):
-            tup = (tuple(env.agent_pos), env.agent_dir, action, env.carrying)
-            if tup in counts:
-                v[action] = counts[tup]
         return v
 
     def get_new_action_prob(self, temperature=1):
@@ -181,6 +267,7 @@ class ExploreActions(gym.core.Wrapper):
 class ActionBonus(gym.core.Wrapper):
     """
     source @ gym_minigrid repo
+    # added carrying info
     Wrapper which adds an exploration bonus.
     This is a reward to encourage exploration of less
     visited (state,action) pairs.
@@ -196,7 +283,7 @@ class ActionBonus(gym.core.Wrapper):
         obs, reward, done, info = self.env.step(action)
 
         env = self.unwrapped
-        tup = (env.agentPos, env.agentDir, action)
+        tup = (env.agentPos, env.agentDir, env.carrying, action)
 
         # Get the count for this (s,a) pair
         preCnt = 0
@@ -294,3 +381,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+import cv2
+
+
+img = cv2.imread("")
