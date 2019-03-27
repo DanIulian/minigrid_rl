@@ -8,7 +8,7 @@ from analytics.utils import get_experiment_files
 
 
 # -- Load experiment Data
-experiment_path = "results/2019Mar20-155504_world_envs/"
+experiment_path = "results/2019Mar22-104716_world_envs/"
 data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
 
 
@@ -21,13 +21,11 @@ save_path = os.path.join(experiment_path, "analysis")
 if not os.path.isdir(save_path):
     os.mkdir(save_path)
 
-plot_data = ['FPS', 'agh_eval_loss', 'agh_loss', 'agworld_loss',
-             'entropy', 'envworld_loss', 'evaluator_loss', 'grad_norm',
-             'num_frames_max', 'num_frames_mean', 'num_frames_min', 'num_frames_std',
-             'policy_loss', 'return_max', 'return_mean', 'return_min', 'return_std',
-             'rreturn_max', 'rreturn_mean', 'rreturn_min', 'rreturn_std',
-             'value', 'value_ext', 'value_ext_loss']
+not_plot = ['frames', 'run_id', 'run_index', 'update', 'cfg_id', 'comment', 'commit', 'experiment',
+            'extra_logs', 'out_dir', 'resume', 'title', '_experiment_parameters.env',  'run_name']
 
+plot_data = set(df.columns) - set(not_plot)
+plot_data = [x for x in plot_data if "." not in x]
 x_axis = "frames"
 
 for plot_p in plot_data:
