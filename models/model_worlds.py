@@ -282,13 +282,21 @@ class AgentWorld(nn.Module):
             nn.Linear(image_embedding_size, hidden_size),
         )
 
+        self.fc_ag_state = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+        )
+
         self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
 
         # Next state prediction
         self._embedding_size = embedding_size = hidden_size  # memory_size
 
         self.fc2 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
+            # nn.Linear(memory_size + embedding_size, memory_size),
+            nn.Linear(embedding_size + embedding_size, memory_size),
             nn.LeakyReLU(),
             nn.Linear(memory_size, memory_size),
             nn.LeakyReLU(),
@@ -297,12 +305,12 @@ class AgentWorld(nn.Module):
         )
 
         self.fc3 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
+            nn.Linear(memory_size + action_space.n, memory_size),
             # nn.Linear(hidden_size + hidden_size, memory_size),
             nn.ReLU(),
             nn.Linear(memory_size, memory_size),
             nn.ReLU(),
-            nn.Linear(memory_size, action_space.n),
+            nn.Linear(memory_size, embedding_size),
             # nn.ReLU()
         )
 
@@ -325,9 +333,12 @@ class AgentWorld(nn.Module):
 
         local_embedding = nn.ReLU()(local_embedding)
 
-        x = torch.cat([x, action_prev], dim=1)
+        ag_st = local_embedding.detach()
+        ag_st = self.fc_ag_state(ag_st)
 
-        x = memory = self.memory_rnn(x, memory)
+        ag_st = torch.cat([ag_st, action_prev], dim=1)
+
+        ag_st = memory = self.memory_rnn(ag_st, memory)
 
         # local_embedding = memory
 
