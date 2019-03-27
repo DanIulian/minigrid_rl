@@ -10,8 +10,11 @@ import datetime
 import torch
 import torch_rl
 import sys
+import cv2
 from liftoff.config import read_config
 from argparse import Namespace
+from analytics import visualize_episode
+import numpy as np
 
 try:
     import gym_minigrid
@@ -19,9 +22,7 @@ except ImportError:
     pass
 
 import utils
-from models import get_model
-from agents import get_agent
-
+from utils import gym_wrappers
 
 def post_process_args(args: NameError) -> None:
     args.mem = args.recurrence > 1
@@ -54,6 +55,7 @@ def run(full_args: Namespace) -> None:
     env.max_steps = full_args.env_cfg.max_episode_steps
     env.seed(args.seed + 10000 * 0)
 
+    env = gym_wrappers.RecordingBehaviour(env)
 
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
@@ -88,24 +90,49 @@ def run(full_args: Namespace) -> None:
     # ==============================================================================================
     # Test model
 
-    done = True
+    done = False
     model.eval()
 
+    initial_image = None
+
+    if agent_args.name == 'PPORND':
+        model = model.policy
+
+    import argparse
+    n_cfg = argparse.Namespace()
+    viz = visualize_episode.VisualizeEpisode(n_cfg)
+
+    obs = env.reset()
+    memory = torch.zeros(1, model.memory_size, device=device)
     while True:
         if done:
+            agent_behaviour = env.get_behaviour()
+            nr_steps = agent_behaviour['step_count']
+            map_shape = np.array((agent_behaviour['full_states'].shape[1], agent_behaviour['full_states'].shape[2]))
+            new_img = viz.draw_single_episode(initial_image, agent_behaviour['positions'][:nr_steps].astype(np.uint8),
+                                              map_shape, agent_behaviour['actions'][:nr_steps].astype(np.uint8))
+
+            cv2.imshow("Map", new_img)
+            cv2.waitKey(0)
+
             obs = env.reset()
-            memory = torch.zeros(1, model.policy_model.memory_size, device=device)
+            memory = torch.zeros(1, model.memory_size, device=device)
+
+
 
         time.sleep(0.1)
         renderer = env.render()
+        if initial_image is None:
+            initial_image = renderer.getArray()
 
         preprocessed_obs = preprocess_obss([obs], device=device)
         if model.recurrent:
-            dist, _, memory = model.policy_model(preprocessed_obs, memory)
+            dist, _, memory = model(preprocessed_obs, memory)
         else:
-            dist, value = model.policy_model(preprocessed_obs)
+            dist, value = model(preprocessed_obs)
 
 
+        #action = dist.probs.argmax()
         action = dist.sample()
         obs, reward, done, _ = env.step(action.cpu().numpy())
         if renderer.window is None:
