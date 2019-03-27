@@ -143,7 +143,6 @@ class TwoValueHeadsBaseGeneral(ABC):
             obs, reward, done, _ = self.env.step(action.cpu().numpy())
 
             # Update experiences values
-
             self.obss[i] = self.obs
             self.obs = obs
             if self.acmodel.recurrent:
@@ -194,6 +193,13 @@ class TwoValueHeadsBaseGeneral(ABC):
 
         # Preprocess experiences
         exps.obs = self.preprocess_obss(exps.obs, device=self.device)
+        exps.action = self.actions.transpose(0, 1).reshape(-1)
+        if self.acmodel.recurrent:
+            # T x P x D -> P x T x D -> (P * T) x D
+            exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
+            # T x P -> P x T -> (P * T) x 1
+            exps.mask = self.masks.transpose(0, 1).reshape(-1).unsqueeze(1)
+
 
         # Add other data to experience buffer
         self.add_extra_experience(exps)
@@ -239,14 +245,8 @@ class TwoValueHeadsBaseGeneral(ABC):
         #   - P is self.num_procs,
         #   - D is the dimensionality.
 
-        if self.acmodel.recurrent:
-            # T x P x D -> P x T x D -> (P * T) x D
-            exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
-            # T x P -> P x T -> (P * T) x 1
-            exps.mask = self.masks.transpose(0, 1).reshape(-1).unsqueeze(1)
 
         # for all tensors below, T x P -> P x T -> P * T
-        exps.action = self.actions.transpose(0, 1).reshape(-1)
         exps.value_ext = self.values_ext.transpose(0, 1).reshape(-1)
         exps.value_int = self.values_int.transpose(0, 1).reshape(-1)
         exps.reward_ext = self.rewards_ext.transpose(0, 1).reshape(-1)

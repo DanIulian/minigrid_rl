@@ -27,6 +27,10 @@ def get_action_bonus(env):
     return ActionBonus(env, only_bonus=True)
 
 
+def include_position(env):
+    return RecordPosition(env)
+
+
 class RecordingBehaviour(Wrapper):
     '''
     When finished collecting information call get_behaviour()
@@ -52,13 +56,9 @@ class RecordingBehaviour(Wrapper):
 
         observation, reward, done, info = self.env.step(action)
 
-        self.actions_taken.append((self.env.actions(action).value,
-                                   self.env.actions(action).name))
-        if type(self.env.agent_pos) == tuple:
-            self.agent_pos.append(self.env.agent_pos)
-        else:
-            self.agent_pos.append(self.env.agent_pos.tolist())
-        self.agent_orient.append(self.env.agent_dir)
+        self.actions_taken[self.env.step_count] = np.array(self.env.actions(action).value)
+        self.agent_pos[self.env.step_count] = np.array(self.env.agent_pos)
+        self.agent_orient[self.env.step_count] = np.array(self.env.agent_dir)
 
         if done:
             self.full_states[self.env.step_count] = self.env.grid.encode()
@@ -66,25 +66,23 @@ class RecordingBehaviour(Wrapper):
         return observation, reward, done, info
 
     def reset(self, **kwargs):
-        self.actions_taken = []
-        self.agent_pos = []
-        self.agent_orient = []
-        self.full_states = np.zeros((self.env.max_steps, self.env.height, self.env.width, 3))
-        if type(self.env.start_pos) == tuple:
-            self.agent_init_status = (self.env.start_pos, self.env.start_dir)
-        else:
-            self.agent_init_status = (self.env.start_pos.tolist(),
-                                      self.env.start_dir)
+        self.actions_taken = np.zeros(self.env.max_steps + 1)
+        self.agent_pos = np.zeros((self.env.max_steps + 1, 2))
+        self.agent_orient = np.zeros(self.env.max_steps + 1)
+        self.full_states = np.zeros((self.env.max_steps + 1, self.env.width, self.env.height, 3))
+
+        self.agent_pos[self.env.step_count] = np.array(self.env.start_pos)
+        self.agent_orient[self.env.step_count] = np.array(self.env.start_dir)
 
         return self.env.reset(**kwargs)
 
     def get_behaviour(self):
         return {
-            "initial_status": self.agent_init_status,
             "actions": deepcopy(self.actions_taken),
-            "positions": deepcopy(self.agent_pos),
+            "positions": deepcopy(self.agent_pos[:, [1, 0]]),
             "orientations": deepcopy(self.agent_orient),
-            "full_states": deepcopy(self.full_states)
+            "full_states": deepcopy(self.full_states),
+            "step_count": self.env.step_count,
         }
 
 
@@ -122,6 +120,26 @@ class RecordFullState(Wrapper):
             [15, self.env.agent_dir, 0])
         full_grid = full_grid.transpose(1, 0, 2)
         return full_grid
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
+
+
+class RecordPosition(Wrapper):
+    def __init__(self, env):
+        super(RecordPosition, self).__init__(env)
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        observation["position"] = np.array(self.env.agent_pos)
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        obs["position"] = np.array(self.env.start_pos)
+
+        return obs
 
     def seed(self, seed=None):
         self.env.seed(seed=seed)

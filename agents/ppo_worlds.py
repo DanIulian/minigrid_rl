@@ -21,6 +21,7 @@ from torch.distributions.categorical import Categorical
 
 
 class HLoss(torch.nn.Module):
+    # entropy loss function
     def __init__(self):
         super(HLoss, self).__init__()
 
