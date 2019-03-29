@@ -178,10 +178,15 @@ def run(full_args: Namespace) -> None:
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img)
 
-    full_state_size = first_env.reset()["state"].shape
+    #full_state_size = first_env.reset()["state"].shape
 
     # Add full size shape
-    add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
+    #add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
+
+    position_size = first_env.reset()["position"].shape
+
+    # Add full size shape
+    add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
 
     # ==============================================================================================
     # Load training status
@@ -271,7 +276,7 @@ def run(full_args: Namespace) -> None:
             header.extend(extra_fields)
             data += [logs[field] for field in extra_fields]
 
-            # print to stdout the standard log fields + filds required in config
+            # print to stdout the standard log fields + fields required in config
             keys_format, printable_data = print_keys(header, data, extra_logs)
             logger.info(keys_format.format(*printable_data))
 

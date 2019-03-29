@@ -89,6 +89,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.batch_num = 0
         self.updates_cnt = 0
 
+        # get width and height of the observation space for position normalization
+
+        self.env_width = envs[0][0].unwrapped.width
+        self.env_height = envs[0][0].unwrapped.height
+
         if self.running_norm_obs:
             self.collect_random_statistics(50)
 
@@ -340,7 +345,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             logs[k] = self.aux_logs[k]
 
         self.updates_cnt += 1
-
         return logs
 
     def _get_batches_starting_indexes(self, recurrence=None, padding=0):
@@ -599,12 +603,13 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         # ------------------------------------------------------------------------------------------
         # Log some values
-
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
         self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
         self.aux_logs['position_loss'] = np.mean(log_evaluator_loss)
         self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
         self.aux_logs['grad_norm_pos'] = np.mean(log_grad_eval_norm)
+
+        return dst_intrinsic_r
 
     def add_extra_experience(self, exps: DictList):
         # Process
@@ -612,22 +617,22 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                        for j in range(self.num_procs)
                        for i in range(self.num_frames_per_proc)]
 
-        exps.position = preprocess_images(full_states, device=self.device)
+        max_pos_value = max(self.env_height, self.env_width)
+        exps.position = preprocess_images(full_states, device=self.device, max_image_value=max_pos_value)
         exps.obs_image = exps.obs.image
 
     def evaluate(self):
+        # set networks in eval mode
+        self.acmodel.eval()
+
         out_dir = self.eval_dir
         env = self.eval_envs
         preprocess_obss = self.preprocess_obss
         device = self.device
         recurrent = self.acmodel.recurrent
         acmodel = self.acmodel
-        evaluator_network = self.acmodel.evaluator_network
-        envworld_network = self.acmodel.envworld_network
-        agworld_network = self.acmodel.agworld_network
-        connect_worlds = self.connect_worlds
-        env_world_prev_act = self.env_world_prev_act
-
+        evaluator_network = acmodel.evaluator_network
+        agworld_network = acmodel.curiosity_model
         updates_cnt = self.updates_cnt
 
         obs = env.reset()
@@ -635,23 +640,23 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             memory = self.eval_memory
 
         mask = self.eval_mask.fill_(1).unsqueeze(1)
-        envworld_mem = self.eval_env_memory.zero_()
-        eval_ag_memory = self.eval_ag_memory.zero_()
+        eval_ag_memory = self.eval_agworld_memory.zero_()
 
-        prev_actions_e = torch.zeros((len(obs), env.action_space.n), device=device)
         prev_actions_a = torch.zeros((len(obs), env.action_space.n), device=device)
         crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
         pred_act = torch.zeros((len(obs), env.action_space.n), device=device)
 
         new_agworld_emb = None
         prev_agworld_mem = None
-        obs_predict = None
         obs_batch = None
-        loss_m_eworld = torch.nn.MSELoss()
+
+        loss_m_nstate = torch.nn.MSELoss()
 
         transitions = []
         envworld_batch_loss = 0
         steps = 200
+
+        max_pos_value = max(self.env_width, self.env_height)
 
         for i in range(steps):
 
@@ -659,10 +664,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             preprocessed_obs = preprocess_obss(obs, device=device)
             obs_batch = torch.transpose(torch.transpose(preprocessed_obs.image, 1, 3), 2, 3)
 
-            if obs_predict is not None:
-                m = mask.squeeze(1).type(torch.ByteTensor)
-                diff_obs = obs_batch[m] - prev_obs[m]
-                envworld_batch_loss += loss_m_eworld(obs_predict[m], diff_obs)
+            pos_batch = preprocess_images(
+                [obs[i]['position'] for i in  range(len(obs))],
+                device=device,
+                max_image_value=max_pos_value
+            ) * max_pos_value
 
             with torch.no_grad():
                 if recurrent:
@@ -672,23 +678,19 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
                 action = dist.sample()
                 crt_actions.zero_()
-                crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)
-
-                # Env world
-                action_embedding = eval_ag_memory if connect_worlds else crt_actions
-
-                obs_predict, envworld_mem = envworld_network(obs_batch, envworld_mem * mask,
-                                                             prev_actions_e, action_embedding)
-
-                # Evaluation network
-                pred_full_state = evaluator_network(envworld_mem.detach())
+                crt_actions.scatter_(1, action.long().unsqueeze(1), 1.)  # transform to one_hot
 
                 # Agent world
-                _, eval_ag_memory, new_agworld_emb = agworld_network(obs_batch,
-                                                                     eval_ag_memory * mask,
-                                                                     prev_actions_a, crt_actions)
+                _, eval_ag_memory, new_agworld_emb = agworld_network(obs_batch, eval_ag_memory * mask,
+                                                                     prev_actions_a)
+
                 if prev_agworld_mem is not None:
                     pred_act = agworld_network.forward_action(prev_agworld_mem, new_agworld_emb)
+
+                pred_state = agworld_network.forward_state(eval_ag_memory, crt_actions)
+
+                # Evaluation network
+                pred_position = evaluator_network(eval_ag_memory.detach()) * max_pos_value
 
                 prev_agworld_mem = eval_ag_memory
 
@@ -696,28 +698,22 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
             mask = (1 - torch.tensor(done, device=device, dtype=torch.float)).unsqueeze(1)
 
-            if env_world_prev_act:
-                prev_actions_e.copy_(crt_actions)
-
             prev_actions_a.copy_(crt_actions)
 
             transitions.append((obs, action.cpu(), reward, done, next_obs, dist.probs.cpu(),
-                                pred_full_state.cpu(), obs_predict.cpu(), envworld_mem.cpu(),
+                                pos_batch.cpu(), pred_state.cpu(),  pred_position.cpu(),
                                 eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu(),
                                 obs_batch.cpu()))
-
-
             obs = next_obs
-
-        print(f"[evalop] {(envworld_batch_loss/steps).item():.6f}")
 
         if out_dir is not None:
             np.save(f"{out_dir}/eval_{updates_cnt}",
                     {"transitions": transitions,
                      "columns": ["obs", "action", "reward", "done", "next_obs", "probs",
-                                 "pred_full_state", "obs_predict", "envworld_mem",
-                                 "eval_ag_memory", "new_agworld_emb", "pred_act",
-                                 "obs_batch"]})
+                                 "pos_batch", "pred_emb_state", "pos_predict","eval_ag_memory",
+                                 "new_agworld_emb", "pred_act", "obs_batch"]})
+
+        self.acmodel.train()
 
         return None
 

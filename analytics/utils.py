@@ -32,12 +32,18 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
         with open(os.path.join(cfg_file)) as handler:
             config_data = yaml.load(handler, Loader=yaml.SafeLoader)
 
-        experiment_id = config_data["experiment_id"] if "experiment_id" in config_data else config_data["cfg_id"]
+        put_manual_id = False
+        if "experiment_id" in config_data:
+            experiment_id = config_data["experiment_id"]
+        else:
+            put_manual_id = True
+            experiment_id = config_data["cfg_id"]
         run_id = getattr(config_data, "run_id", 0)
 
         data[run_index]["experiment_id"] = experiment_id
         data[run_index]["run_id"] = run_id
 
+        #cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
         cfg_df = pd.DataFrame(nested_to_record(config_data))
         cfg_df["run_name"] = run_name
         cfg_df["run_index"] = run_index
@@ -58,9 +64,8 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
                 # Some bad header for experiments Fix
                 # file_data = getattr(pd, file_type)(file_path, skiprows=1, names=['update', 'frames', 'FPS', 'duration', 'rreturn_mean', 'rreturn_std', 'rreturn_min', 'rreturn_max', 'num_frames_mean', 'num_frames_std', 'num_frames_min', 'num_frames_max', 'entropy', 'value', 'policy_loss', 'value_loss', 'grad_norm', 'value_ext', 'value_int', 'value_ext_loss', 'value_int_loss', 'return_mean', 'return_std', 'return_min', 'return_max'])
                 file_data = getattr(pd, file_type)(file_path)
-                if "experiment_id" not in file_data.columns:
+                if put_manual_id:
                     file_data["experiment_id"] = experiment_id
-                if "run_id" not in file_data.columns:
                     file_data["run_id"] = run_id
 
                 file_data["run_index"] = run_index
