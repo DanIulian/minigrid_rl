@@ -566,7 +566,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 agworld_mems[i] = agworld_mem
 
                 # Update agent state in mem
-                f.agstate_mems[inds + i].copy_(agworld_mem.detach())
+                # f.agstate_mems[inds + i].copy_(agworld_mem.detach())
 
             # --------------------------------------------------------------------------------------
 
@@ -631,6 +631,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     pred_state = agstate_network.predict_state(agstate_mem, action_hist)
                     agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
                                                              agworld_mems[i + gap_size][mask])
+                    # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                    #                                          f.agstate_mems[inds + i + gap_size][
+                    #                                              mask].detach())
 
             for _ in range(train_distance_triplets):
                 triplet = torch.randperm(recurrence_worlds)[:3].sort()[0].to(device)
@@ -1253,19 +1256,19 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 diff_pred = diff_pred.detach().mean(1)
                 diff_pred.mul_(mask.float())  # Zero prediction for fwd mask
 
-                # -- Calculate prev error from t-1
-                prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
-                action_hist.add_(prev_action_hist)
-
-                mask = mask & f.mask[i].squeeze(1).type(torch.ByteTensor).to(device)
-
-                pred_state = agstate_network.predict_state(agstate_mems[i - 1], action_hist)
-                diff_pred_prev = (pred_state - agworld_mems[i + gap_size]).pow_(2)
-                diff_pred_prev = diff_pred_prev.detach().mean(1)
-                diff_pred_prev.mul_(mask.float())  # Zero prediction for fwd mask
+                # # -- Calculate prev error from t-1
+                # prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
+                # action_hist.add_(prev_action_hist)
+                #
+                # mask = mask & f.mask[i].squeeze(1).type(torch.ByteTensor).to(device)
+                #
+                # pred_state = agstate_network.predict_state(agstate_mems[i - 1], action_hist)
+                # diff_pred_prev = (pred_state - agstate_mems[i + gap_size]).pow_(2)
+                # diff_pred_prev = diff_pred_prev.detach().mean(1)
+                # diff_pred_prev.mul_(mask.float())  # Zero prediction for fwd mask
 
                 # -- Calculate intrinsic & Normalize intrinsic rewards
-                int_rew = diff_pred - diff_pred_prev
+                int_rew = diff_pred # - diff_pred_prev
 
                 dst_intrinsic_r[i].copy_(int_rew)
 
