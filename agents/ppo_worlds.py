@@ -1267,6 +1267,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
+        return dst_intrinsic_r
         """ [GOALS]
 
         # ------------------------------------------------------------------------------------------

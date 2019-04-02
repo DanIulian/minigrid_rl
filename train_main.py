@@ -184,15 +184,18 @@ def run(full_args: Namespace) -> None:
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img)
 
-    #full_state_size = first_env.reset()["state"].shape
+    first_obs = first_env.reset()
+    if "state" in first_obs:
+        full_state_size = first_obs["state"].shape
 
-    # Add full size shape
-    #add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
+        # Add full size shape
+        add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
 
-    position_size = first_env.reset()["position"].shape
+    if "position" in first_obs:
+        position_size = first_obs["position"].shape
 
-    # Add full size shape
-    add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
+        # Add full size shape
+        add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
 
     # ==============================================================================================
     # Load training status
