@@ -207,7 +207,7 @@ class TwoValueHeadsBaseGeneral(ABC):
         # ==========================================================================================
 
         # -- Calculate intrinsic return
-        self.calculate_intrinsic_reward(exps, self.rewards_int)
+        self.rewards_int = self.calculate_intrinsic_reward(exps, self.rewards_int)
 
         # Add advantage and return to experiences
         # don;t use end of episode signal for intrinsic rewards
