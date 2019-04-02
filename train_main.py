@@ -151,7 +151,6 @@ def run(full_args: Namespace) -> None:
 
         env_wrapper = env_wrapp
 
-
     actual_procs = getattr(args, "actual_procs", None)
     no_actions = getattr(full_args.env_cfg, "no_actions", 6)
 

@@ -619,8 +619,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                     # TODO --- again slow :(
                     mask = [f.mask[ii: ii+gap_size] for ii in inds + i + 1]
-                    mask = torch.stack(mask)
-                    mask = (mask > 0).any(dim=1).squeeze(1).type(torch.ByteTensor)
+                    mask = torch.stack(mask).type(torch.ByteTensor)
+                    mask = mask.all(dim=1).squeeze(1).type(torch.ByteTensor)
 
                     pred_act_hist = agstate_network.forward_action(agstate_mem,
                                                                    agworld_mems[i + gap_size])
@@ -1223,38 +1223,53 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         agstate_mems = f.agstate_mems
         agworld_mems = f.agworld_mems
 
-        for i in range(num_frames_per_proc-1):
-            gap_size = gap_distribution.sample() + 1
-            if i + gap_size >= num_frames_per_proc:
-                gap_size = 1
+        # TODO Use prev memory
+        with torch.no_grad():
+            for i in range(1, num_frames_per_proc-1):
+                gap_size = gap_distribution.sample() + 1
+                if i + gap_size >= num_frames_per_proc:
+                    gap_size = 1
 
-            action_hist = [
-                torch.histc(f.action[i: i + gap_size, pp].cpu().float(),
-                            min=0, max=no_actions,
-                            bins=no_actions)
-                for pp in range(num_procs)
-            ]
+                action_hist = [
+                    torch.histc(f.action[i: i + gap_size, pp].cpu().float(),
+                                min=0, max=no_actions,
+                                bins=no_actions)
+                    for pp in range(num_procs)
+                ]
 
-            action_hist = torch.stack(action_hist)
+                action_hist = torch.stack(action_hist)
 
-            # normalize
-            action_hist.div_(max_action_hist)
-            action_hist = action_hist.to(device)
+                # normalize
+                action_hist.div_(max_action_hist)
+                action_hist = action_hist.to(device)
 
-            mask = [f.mask[i + 1: i + 1 + gap_size, pp] for pp in range(num_procs)]
-            mask = torch.stack(mask)
-            mask = (mask > 0).any(dim=1).squeeze(1).type(torch.ByteTensor)
+                mask = [f.mask[i + 1: i + 1 + gap_size, pp] for pp in range(num_procs)]
+                mask = torch.stack(mask).type(torch.ByteTensor)
+                mask = mask.all(dim=1).squeeze(1).type(torch.ByteTensor).to(device)
 
-            pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
+                pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
 
-            diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
+                diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
+                diff_pred = diff_pred.detach().mean(1)
+                diff_pred.mul_(mask.float())  # Zero prediction for fwd mask
 
-            # -- Calculate intrinsic & Normalize intrinsic rewards
-            int_rew = diff_pred.detach().mean(1)
+                # -- Calculate prev error from t-1
+                prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
+                action_hist.add_(prev_action_hist)
 
-            dst_intrinsic_r[i].copy_(int_rew)
+                mask = mask & f.mask[i].squeeze(1).type(torch.ByteTensor).to(device)
 
-            # TODO - What about last prediction :( no intrinsic reward
+                pred_state = agstate_network.predict_state(agstate_mems[i - 1], action_hist)
+                diff_pred_prev = (pred_state - agworld_mems[i + gap_size]).pow_(2)
+                diff_pred_prev = diff_pred_prev.detach().mean(1)
+                diff_pred_prev.mul_(mask.float())  # Zero prediction for fwd mask
+
+                # -- Calculate intrinsic & Normalize intrinsic rewards
+                int_rew = diff_pred - diff_pred_prev
+
+                dst_intrinsic_r[i].copy_(int_rew)
+
+                # TODO - What about last prediction :( no intrinsic reward
 
         # Normalize intrinsic reward
         # self.predictor_rff.reset() # do you have to rest it every time ???
