@@ -23,6 +23,7 @@ class WorldsModels(nn.Module, torch_rl.RecurrentACModel):
                                               use_text=use_text)
 
         self.agworld_network = AgentWorld(cfg, obs_space, action_space)
+        self.agstate_network = AgentState(cfg, obs_space, action_space)
 
         # Configure action embedding size for connected worlds
         if connect_worlds:
@@ -54,25 +55,31 @@ class WorldsPolicyModel(nn.Module, torch_rl.RecurrentACModel):
 
         # CFG Information
         self.memory_type = memory_type = cfg.memory_type
-        hidden_size = getattr(cfg, "hidden_size", 128)
-        self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
+        hidden_size = getattr(cfg, "hidden_size", 512)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 512)
 
         # Decide which components are enabled
         self.use_text = use_text
         self.use_memory = use_memory
 
+        channels = 3
+
         # Define image embedding
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (2, 2)),
-            nn.ReLU(),
+            nn.Conv2d(channels, 16, (3, 3)),
+            nn.BatchNorm2d(16),
+            nn.LeakyReLU(),
             nn.Conv2d(16, 32, (2, 2)),
-            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
             nn.Conv2d(32, 64, (2, 2)),
-            nn.ReLU()
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(),
         )
+
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        self.image_embedding_size = ((n-1)-2)*((m-1)-2)*64
+        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
@@ -282,13 +289,14 @@ class AgentWorld(nn.Module):
             nn.Linear(image_embedding_size, hidden_size),
         )
 
-        self.memory_rnn = nn.GRUCell(hidden_size, memory_size)
+        self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
 
         # Next state prediction
-        self._embedding_size = embedding_size = memory_size  # hidden_size
+        self._embedding_size = embedding_size = hidden_size  # memory_size
 
         self.fc2 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
+            # nn.Linear(memory_size + embedding_size, memory_size),
+            nn.Linear(embedding_size + embedding_size, memory_size),
             nn.LeakyReLU(),
             nn.Linear(memory_size, memory_size),
             nn.LeakyReLU(),
@@ -297,15 +305,108 @@ class AgentWorld(nn.Module):
         )
 
         self.fc3 = nn.Sequential(
-            nn.Linear(memory_size + embedding_size, memory_size),
+            nn.Linear(memory_size + action_space.n, memory_size),
             # nn.Linear(hidden_size + hidden_size, memory_size),
             nn.ReLU(),
             nn.Linear(memory_size, memory_size),
             nn.ReLU(),
+            nn.Linear(memory_size, embedding_size),
+            # nn.ReLU()
+        )
+
+
+    @property
+    def memory_size(self):
+        return self._memory_size
+
+    @property
+    def embedding_size(self):
+        return self._embedding_size
+
+    def forward(self, x, memory, next_action, action_next):
+        b_size = x.size()
+
+        x = self.image_conv(x)
+        x = x.view(b_size[0], -1)
+
+        x = local_embedding = self.fc1(x)
+
+        ag_st = local_embedding  # .detach()
+
+        ag_st = torch.cat([ag_st, next_action], dim=1)
+
+        ag_st = memory = self.memory_rnn(ag_st, memory)
+
+        return None, memory
+
+    def forward_action(self, x, embedding):
+        x = torch.cat([x, embedding], dim=1)
+
+        x = self.fc2(x)
+        return x
+
+    def forward_action_eval(self, x, embedding):
+        x = torch.cat([x, embedding], dim=1)
+
+        x = self.fc3(x)
+        return x
+
+
+class AgentState(nn.Module):
+    def __init__(self, cfg, obs_space, action_space):
+        super(AgentState, self).__init__()
+        n = obs_space["image"][0]
+        m = obs_space["image"][1]
+
+        hidden_size = 512  # getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = 512  # getattr(cfg, "memory_size", 256)
+        channels = 3
+        self.action_space = torch.Size((action_space.n, ))
+
+        out_size = n * m * channels
+
+        self.image_conv = nn.Sequential(
+            nn.Conv2d(channels, 16, (3, 3)),
+            nn.BatchNorm2d(16),
+            nn.LeakyReLU(),
+            nn.Conv2d(16, 32, (2, 2)),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            nn.Conv2d(32, 64, (2, 2)),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(),
+        )
+
+        image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
+
+        # Consider embedding out of fc1
+        self.fc1 = nn.Sequential(
+            nn.Linear(image_embedding_size, hidden_size),
+        )
+
+        self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
+
+        # Next state prediction
+        self._embedding_size = embedding_size = hidden_size  # memory_size
+
+        # TODO should get memory from agent world
+        self.fc2 = nn.Sequential(
+            nn.Linear(memory_size + memory_size, memory_size),
+            nn.LeakyReLU(),
+            nn.Linear(memory_size, memory_size),
+            nn.LeakyReLU(),
             nn.Linear(memory_size, action_space.n),
             # nn.ReLU()
         )
 
+        self.fc_predict_state = nn.Sequential(
+            nn.Linear(memory_size + action_space.n, memory_size),
+            nn.LeakyReLU(),
+            nn.Linear(memory_size, memory_size),
+            nn.LeakyReLU(),
+            nn.Linear(memory_size, memory_size),
+            # nn.ReLU()
+        )
 
     @property
     def memory_size(self):
@@ -323,28 +424,26 @@ class AgentWorld(nn.Module):
 
         x = local_embedding = self.fc1(x)
 
-        # local_embedding = nn.ReLU()(local_embedding)
+        ag_st = local_embedding
 
-        # x = torch.cat([x, action_prev], dim=1)
+        ag_st = torch.cat([ag_st, action_prev], dim=1)
 
-        x = memory = self.memory_rnn(x, memory)
-
-        local_embedding = memory
+        ag_st = memory = self.memory_rnn(ag_st, memory)
 
         return None, memory, local_embedding
 
-    def forward_action(self, x, embedding):
-        x = torch.cat([x, embedding], dim=1)
-        # x = x + embedding
+    def forward_action(self, x, action_next):
+        x = torch.cat([x, action_next], dim=1)
 
         x = self.fc2(x)
         return x
 
-    def forward_action_eval(self, x, embedding):
-        x = torch.cat([x, embedding], dim=1)
+    def predict_state(self, x, action_next):
+        x = torch.cat([x, action_next], dim=1)
 
-        x = self.fc3(x)
+        x = self.fc_predict_state(x)
         return x
+
 
 
 class EvaluationNet(nn.Module):

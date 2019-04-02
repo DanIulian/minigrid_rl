@@ -399,9 +399,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-import cv2
-
-
-img = cv2.imread("")

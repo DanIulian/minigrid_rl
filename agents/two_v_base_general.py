@@ -70,6 +70,7 @@ class TwoValueHeadsBaseGeneral(ABC):
         # Store helpers values
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.num_procs = sum(map(len, envs)) if isinstance(envs[0], list) else len(envs)
         self.num_frames = self.num_frames_per_proc * self.num_procs
 
@@ -199,7 +200,6 @@ class TwoValueHeadsBaseGeneral(ABC):
             exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
             # T x P -> P x T -> (P * T) x 1
             exps.mask = self.masks.transpose(0, 1).reshape(-1).unsqueeze(1)
-
 
         # Add other data to experience buffer
         self.add_extra_experience(exps)
