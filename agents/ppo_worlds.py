@@ -62,7 +62,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
-        num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
+        num_frames_per_proc = getattr(cfg, "frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
         entropy_coef = getattr(cfg, "entropy_coef", 0.01)
@@ -101,6 +101,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.distance_margin = getattr(cfg, "distance_margin", 1.)
 
         self.warmup_steps = getattr(cfg, "warmup_steps", 5)
+        self.pred_state_rnn_mode = getattr(cfg, "pred_state_rnn_mode", True)
+        print(self.pred_state_rnn_mode)
 
         gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
         gap_prob = gap_prob.float()/gap_prob.sum()
@@ -572,6 +574,10 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             # --------------------------------------------------------------------------------------
             # -- Go fwd agent state and predict action given state_mem(i) &  world_mem (i+gap_size)
+            # batch actions and masks
+            actions_onehot = torch.stack([f.actions_onehot[inds + i] for i in range(no_steps)])
+            masks = torch.stack([f.mask[inds + i] for i in range(no_steps+1)]).squeeze(2).type(
+                torch.cuda.ByteTensor)
 
             for i in range(no_steps - gap_size):
                 obs = f.obs_image[inds + i]
@@ -603,37 +609,46 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     agworld_batch_loss_diff += loss_m_aworld(s_act_predict[~same], s_crt_actions[~same])
 
                 else:
-                    # -- Calculate gap histogram TODO very slow :(
-                    action_hist = [
-                        torch.histc(f.action[ii: ii+gap_size].cpu().float(),
-                                    min=0, max=no_actions,
-                                    bins=no_actions)
-                        for ii in inds + i
-                    ]
-
-                    action_hist = torch.stack(action_hist)
+                    action_hist = actions_onehot[i: i+gap_size].sum(dim=0)
 
                     # normalize
                     action_hist.div_(max_action_hist)
                     action_hist = action_hist.to(device)
 
                     # TODO --- again slow :(
-                    mask = [f.mask[ii: ii+gap_size] for ii in inds + i + 1]
-                    mask = torch.stack(mask).type(torch.ByteTensor)
-                    mask = mask.all(dim=1).squeeze(1).type(torch.ByteTensor)
+                    mask = masks[i+1: i+1+gap_size].all(dim=0)
 
                     pred_act_hist = agstate_network.forward_action(agstate_mem,
                                                                    agworld_mems[i + gap_size])
 
                     agstate_batch_loss += loss_m_agstate(pred_act_hist[mask], action_hist[mask])
+                    # agstate_batch_loss += loss_m_agstate(pred_act_hist, action_hist)
 
                     # TODO -- Should be backprop through agworld mem?
-                    pred_state = agstate_network.predict_state(agstate_mem, action_hist)
-                    agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
-                                                             agworld_mems[i + gap_size][mask])
-                    # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
-                    #                                          f.agstate_mems[inds + i + gap_size][
-                    #                                              mask].detach())
+                    rnn_mode = self.pred_state_rnn_mode
+                    if rnn_mode:
+                        selected_actions = actions_onehot[:, mask]
+                        empty_obs = torch.zeros_like(obs)[mask]
+                        empty_hist = torch.zeros_like(action_hist)[mask]
+                        new_agstate_mem = agstate_mem[mask]
+
+                        for ii in range(gap_size):
+                            _, new_agstate_mem, _ = agstate_network(empty_obs,
+                                                                    new_agstate_mem,
+                                                                    selected_actions[ii],
+                                                                    None)
+
+                        pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
+                        agstate_p_batch_loss += loss_m_agstate_p(pred_state,
+                                                                 agworld_mems[i + gap_size][mask])
+
+                    else:
+                        pred_state = agstate_network.predict_state(agstate_mem, action_hist)
+                        agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                                                                 agworld_mems[i + gap_size][mask])
+                        # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                        #                                          f.agstate_mems[inds + i + gap_size][
+                        #                                              mask].detach())
 
             for _ in range(train_distance_triplets):
                 triplet = torch.randperm(recurrence_worlds)[:3].sort()[0].to(device)
@@ -1226,35 +1241,44 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         agstate_mems = f.agstate_mems
         agworld_mems = f.agworld_mems
 
+        masks = f.mask.squeeze(2).type(torch.cuda.ByteTensor)
         # TODO Use prev memory
+
         with torch.no_grad():
-            for i in range(1, num_frames_per_proc-1):
+            for i in range(0, num_frames_per_proc-1):
                 gap_size = gap_distribution.sample() + 1
                 if i + gap_size >= num_frames_per_proc:
                     gap_size = 1
 
-                action_hist = [
-                    torch.histc(f.action[i: i + gap_size, pp].cpu().float(),
-                                min=0, max=no_actions,
-                                bins=no_actions)
-                    for pp in range(num_procs)
-                ]
-
-                action_hist = torch.stack(action_hist)
+                action_hist = f.actions_onehot[i: i + gap_size].sum(dim=0)
 
                 # normalize
                 action_hist.div_(max_action_hist)
                 action_hist = action_hist.to(device)
 
-                mask = [f.mask[i + 1: i + 1 + gap_size, pp] for pp in range(num_procs)]
-                mask = torch.stack(mask).type(torch.ByteTensor)
-                mask = mask.all(dim=1).squeeze(1).type(torch.ByteTensor).to(device)
+                # TODO offer error in prediction between game restarts? Seems to do good :D
+                # mask2 = masks[i + 1: i + 1 + gap_size].all(dim=0)
 
-                pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
+                rnn_mode = self.pred_state_rnn_mode
+                if rnn_mode:
+                    selected_actions = f.actions_onehot
+                    empty_obs = torch.zeros_like(f.obs_image[0])
+                    empty_hist = torch.zeros_like(action_hist)
+                    new_agstate_mem = agstate_mems[i]
+
+                    for ii in range(gap_size):
+                        _, new_agstate_mem, _ = agstate_network(empty_obs,
+                                                                new_agstate_mem,
+                                                                selected_actions[i+ii],
+                                                                None)
+
+                    pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
+                else:
+                    pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
 
                 diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
                 diff_pred = diff_pred.detach().mean(1)
-                diff_pred.mul_(mask.float())  # Zero prediction for fwd mask
+                # diff_pred.mul_(mask2.float())  # Zero prediction for fwd mask
 
                 # # -- Calculate prev error from t-1
                 # prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
