@@ -102,7 +102,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         self.warmup_steps = getattr(cfg, "warmup_steps", 5)
         self.pred_state_rnn_mode = getattr(cfg, "pred_state_rnn_mode", True)
-        print(self.pred_state_rnn_mode)
 
         gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
         gap_prob = gap_prob.float()/gap_prob.sum()
@@ -617,38 +616,38 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                     # TODO --- again slow :(
                     mask = masks[i+1: i+1+gap_size].all(dim=0)
+                    if mask.any():
+                        pred_act_hist = agstate_network.forward_action(agstate_mem,
+                                                                       agworld_mems[i + gap_size])
 
-                    pred_act_hist = agstate_network.forward_action(agstate_mem,
-                                                                   agworld_mems[i + gap_size])
+                        agstate_batch_loss += loss_m_agstate(pred_act_hist[mask], action_hist[mask])
+                        # agstate_batch_loss += loss_m_agstate(pred_act_hist, action_hist)
 
-                    agstate_batch_loss += loss_m_agstate(pred_act_hist[mask], action_hist[mask])
-                    # agstate_batch_loss += loss_m_agstate(pred_act_hist, action_hist)
+                        # TODO -- Should be backprop through agworld mem?
+                        rnn_mode = self.pred_state_rnn_mode
+                        if rnn_mode:
+                            selected_actions = actions_onehot[:, mask]
+                            empty_obs = torch.zeros_like(obs)[mask]
+                            empty_hist = torch.zeros_like(action_hist)[mask]
+                            new_agstate_mem = agstate_mem[mask]
 
-                    # TODO -- Should be backprop through agworld mem?
-                    rnn_mode = self.pred_state_rnn_mode
-                    if rnn_mode:
-                        selected_actions = actions_onehot[:, mask]
-                        empty_obs = torch.zeros_like(obs)[mask]
-                        empty_hist = torch.zeros_like(action_hist)[mask]
-                        new_agstate_mem = agstate_mem[mask]
+                            for ii in range(gap_size):
+                                _, new_agstate_mem, _ = agstate_network(empty_obs,
+                                                                        new_agstate_mem,
+                                                                        selected_actions[ii],
+                                                                        None)
 
-                        for ii in range(gap_size):
-                            _, new_agstate_mem, _ = agstate_network(empty_obs,
-                                                                    new_agstate_mem,
-                                                                    selected_actions[ii],
-                                                                    None)
+                            pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
+                            agstate_p_batch_loss += loss_m_agstate_p(pred_state,
+                                                                     agworld_mems[i + gap_size][mask])
 
-                        pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
-                        agstate_p_batch_loss += loss_m_agstate_p(pred_state,
-                                                                 agworld_mems[i + gap_size][mask])
-
-                    else:
-                        pred_state = agstate_network.predict_state(agstate_mem, action_hist)
-                        agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
-                                                                 agworld_mems[i + gap_size][mask])
-                        # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
-                        #                                          f.agstate_mems[inds + i + gap_size][
-                        #                                              mask].detach())
+                        else:
+                            pred_state = agstate_network.predict_state(agstate_mem, action_hist)
+                            agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                                                                     agworld_mems[i + gap_size][mask])
+                            # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                            #                                          f.agstate_mems[inds + i + gap_size][
+                            #                                              mask].detach())
 
             for _ in range(train_distance_triplets):
                 triplet = torch.randperm(recurrence_worlds)[:3].sort()[0].to(device)
