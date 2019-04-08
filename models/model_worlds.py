@@ -445,7 +445,6 @@ class AgentState(nn.Module):
         return x
 
 
-
 class EvaluationNet(nn.Module):
     def __init__(self, cfg, obs_space, out_space):
         super(EvaluationNet, self).__init__()

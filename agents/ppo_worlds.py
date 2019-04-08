@@ -102,6 +102,10 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         self.warmup_steps = getattr(cfg, "warmup_steps", 5)
         self.pred_state_rnn_mode = getattr(cfg, "pred_state_rnn_mode", True)
+        self.intrinsic_norm_action = getattr(cfg, "intrinsic_norm_action", True)
+        self.intrinsic_norm_gap = getattr(cfg, "intrinsic_norm_gap", True)
+        self.intrinsic_gaps = getattr(cfg, "intrinsic_gaps", [1, 2, 3])
+        self.save_experience_batch = getattr(cfg, "save_experience_batch", False)
 
         gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
         gap_prob = gap_prob.float()/gap_prob.sum()
@@ -111,8 +115,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
 
+        self.no_actions = no_actions = self.env.action_space.n
+
         if play_heuristic == 1:
-            no_actions = self.env.action_space.n
             self.acmodel.policy_model = RandomPolicy(self.acmodel.policy_model, no_actions,
                                                      self.device)
 
@@ -136,6 +141,16 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         # -- Prepare intrinsic generators
         # self.acmodel.random_target.eval()
+        if self.intrinsic_norm_action:
+            self.predictor_rms_a = [RunningMeanStd() for _ in range(no_actions)]
+            self.predictor_rff_a = [RewardForwardFilter(gamma=self.discount) for _ in range(
+                no_actions)]
+
+        if self.intrinsic_norm_gap:
+            ng = len(self.intrinsic_gaps)
+            self.predictor_rms_g = [RunningMeanStd() for _ in range(ng)]
+            self.predictor_rff_g = [RewardForwardFilter(gamma=self.discount) for _ in range(ng)]
+
         self.predictor_rms = RunningMeanStd()
         self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
@@ -1235,6 +1250,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         max_action_hist = self.max_pred_gap / 2
         device = self.device
         agstate_network = self.acmodel.agstate_network
+        # Save state
+        out_dir = self.eval_dir
+        updates_cnt = self.updates_cnt
+        save_experience_batch = self.save_experience_batch
+
+        save = save_experience_batch > 0 and (updates_cnt + 1) % save_experience_batch == 0
 
         loss_m_agstate_p = nn.MSELoss()
         agstate_mems = f.agstate_mems
@@ -1242,63 +1263,104 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         masks = f.mask.squeeze(2).type(torch.cuda.ByteTensor)
         # TODO Use prev memory
-
+        gaps = []
+        dst_intrinsic_r.zero_()
         with torch.no_grad():
-            for i in range(0, num_frames_per_proc-1):
-                gap_size = gap_distribution.sample() + 1
-                if i + gap_size >= num_frames_per_proc:
-                    gap_size = 1
+            dst_intrinsic_r_t = torch.zeros_like(dst_intrinsic_r)
 
-                action_hist = f.actions_onehot[i: i + gap_size].sum(dim=0)
+            for gap_i, gap_size_i in enumerate(self.intrinsic_gaps):
+                gap_size = gap_size_i
 
-                # normalize
-                action_hist.div_(max_action_hist)
-                action_hist = action_hist.to(device)
+                for i in range(0, num_frames_per_proc-gap_size_i):
+                    # gap_size = gap_distribution.sample() + 1
+                    # if i + gap_size >= num_frames_per_proc:
+                    #     gap_size = gap_size_i
 
-                # TODO offer error in prediction between game restarts? Seems to do good :D
-                # mask2 = masks[i + 1: i + 1 + gap_size].all(dim=0)
+                    gaps.append(gap_size)
 
-                rnn_mode = self.pred_state_rnn_mode
-                if rnn_mode:
-                    selected_actions = f.actions_onehot
-                    empty_obs = torch.zeros_like(f.obs_image[0])
-                    empty_hist = torch.zeros_like(action_hist)
-                    new_agstate_mem = agstate_mems[i]
+                    action_hist = f.actions_onehot[i: i + gap_size].sum(dim=0)
 
-                    for ii in range(gap_size):
-                        _, new_agstate_mem, _ = agstate_network(empty_obs,
-                                                                new_agstate_mem,
-                                                                selected_actions[i+ii],
-                                                                None)
+                    # normalize
+                    action_hist.div_(max_action_hist)
+                    action_hist = action_hist.to(device)
 
-                    pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
-                else:
-                    pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
+                    # TODO offer error in prediction between game restarts? Seems to do good :D
+                    # mask2 = masks[i + 1: i + 1 + gap_size].all(dim=0)
 
-                diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
-                diff_pred = diff_pred.detach().mean(1)
-                # diff_pred.mul_(mask2.float())  # Zero prediction for fwd mask
+                    rnn_mode = self.pred_state_rnn_mode
+                    if rnn_mode:
+                        selected_actions = f.actions_onehot
+                        empty_obs = torch.zeros_like(f.obs_image[0])
+                        empty_hist = torch.zeros_like(action_hist)
+                        new_agstate_mem = agstate_mems[i]
 
-                # # -- Calculate prev error from t-1
-                # prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
-                # action_hist.add_(prev_action_hist)
-                #
-                # mask = mask & f.mask[i].squeeze(1).type(torch.ByteTensor).to(device)
-                #
-                # pred_state = agstate_network.predict_state(agstate_mems[i - 1], action_hist)
-                # diff_pred_prev = (pred_state - agstate_mems[i + gap_size]).pow_(2)
-                # diff_pred_prev = diff_pred_prev.detach().mean(1)
-                # diff_pred_prev.mul_(mask.float())  # Zero prediction for fwd mask
+                        for ii in range(gap_size):
+                            _, new_agstate_mem, _ = agstate_network(empty_obs,
+                                                                    new_agstate_mem,
+                                                                    selected_actions[i+ii],
+                                                                    None)
 
-                # -- Calculate intrinsic & Normalize intrinsic rewards
-                int_rew = diff_pred # - diff_pred_prev
+                        pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
+                    else:
+                        pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
 
-                dst_intrinsic_r[i].copy_(int_rew)
+                    diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
+                    diff_pred = diff_pred.detach().mean(1)
+                    # diff_pred.mul_(mask2.float())  # Zero prediction for fwd mask
 
-                # TODO - What about last prediction :( no intrinsic reward
+                    # # -- Calculate prev error from t-1
+                    # prev_action_hist = f.actions_onehot[i - 1] / max_action_hist
+                    # action_hist.add_(prev_action_hist)
+                    #
+                    # mask = mask & f.mask[i].squeeze(1).type(torch.ByteTensor).to(device)
+                    #
+                    # pred_state = agstate_network.predict_state(agstate_mems[i - 1], action_hist)
+                    # diff_pred_prev = (pred_state - agstate_mems[i + gap_size]).pow_(2)
+                    # diff_pred_prev = diff_pred_prev.detach().mean(1)
+                    # diff_pred_prev.mul_(mask.float())  # Zero prediction for fwd mask
 
+                    # -- Calculate intrinsic & Normalize intrinsic rewards
+                    int_rew = diff_pred  # - diff_pred_prev
+
+                    # TODO Not sure it improves offseting reward
+                    dst_intrinsic_r_t[i + gap_size - 1].add_(int_rew)
+                    # TODO - What about last prediction :( no intrinsic reward
+
+                if self.intrinsic_norm_gap:
+                    self.predictor_rms_g[gap_i].update(dst_intrinsic_r_t.view(-1))
+                    rms = torch.sqrt(self.predictor_rms_g[gap_i].var).to(dst_intrinsic_r.device)
+                    print(f"Gap {gap_size} rms:", rms.item())
+                    dst_intrinsic_r_t.div_(rms)
+
+                dst_intrinsic_r.add_(dst_intrinsic_r_t)
+
+        # Append info for eval
+        if save:
+            gaps.append(0)  # adjust to have same size
+            f.gaps = gaps
+            f.dst_intrinsic_r_pre = dst_intrinsic_r.clone()
+
+        if self.intrinsic_norm_action:
+            no_actions = self.no_actions
+            int_rff = torch.zeros((num_frames_per_proc, num_procs), device=self.device)
+            for i in range(no_actions):
+                int_rff.zero_()
+
+                actions = f.action == i
+
+                self.predictor_rms_a[i].update(dst_intrinsic_r[actions].view(-1))
+                # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
+                rms = torch.sqrt(self.predictor_rms_a[i].var).to(dst_intrinsic_r.device)
+
+                actions = actions.float()
+                print(f"Action {i} rms:", rms.item())
+                rms = rms * actions + (1-actions)
+                dst_intrinsic_r.div_(rms)
+
+        # ------------------------------------------------------------------------------------------
         # Normalize intrinsic reward
-        # self.predictor_rff.reset() # do you have to rest it every time ???
+        self.predictor_rff.reset() # do you have to rest it every time ???
+
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
 
         for i in reversed(range(self.num_frames_per_proc)):
@@ -1306,7 +1368,17 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         self.predictor_rms.update(int_rff.view(-1))
         # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
-        dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
+        rms = torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device)
+        dst_intrinsic_r.div_(rms)
+        # ------------------------------------------------------------------------------------------
+
+        if save:
+            f.dst_intrinsic_r_post = dst_intrinsic_r.clone()
+            torch.save(f, f"{out_dir}/f_{updates_cnt}")
+
+            delattr(f, "gaps")
+            delattr(f, "dst_intrinsic_r_pre")
+            delattr(f, "dst_intrinsic_r_post")
 
         return dst_intrinsic_r
         """ [GOALS]
