@@ -9,6 +9,7 @@ from optparse import OptionParser
 import time
 import math
 import collections
+from gym_minigrid.minigrid import OBJECT_TO_IDX
 
 try:
     import gym_minigrid
@@ -122,9 +123,11 @@ class RecordFullState(Wrapper):
         env = self.unwrapped
         full_grid = env.grid.encode()
 
+        carying = 0 if env.carrying is None else OBJECT_TO_IDX[env.carrying.type]
+
         full_grid[env.agent_pos[0]][env.agent_pos[1]] = np.array(
-            [15, env.agent_dir, 0])
-        full_grid = full_grid.transpose(1, 0, 2)
+            [15, env.agent_dir, carying])
+        # full_grid = full_grid.transpose(0, 1, 2)
         return full_grid
 
     def seed(self, seed=None):
