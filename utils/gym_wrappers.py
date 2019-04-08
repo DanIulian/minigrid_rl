@@ -32,6 +32,10 @@ def include_position(env):
     return RecordPosition(env)
 
 
+def get_interactions(env):
+    return GetImportantInteractions(env)
+
+
 class RecordingBehaviour(Wrapper):
     '''
     When finished collecting information call get_behaviour()
@@ -162,13 +166,13 @@ class RecordPosition(Wrapper):
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
-        observation["position"] = np.array(self.env.agent_pos)
+        observation["position"] = np.array(self.env.unwrapped.agent_pos)
 
         return observation, reward, done, info
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
-        obs["position"] = np.array(self.env.start_pos)
+        obs["position"] = np.array(self.env.unwrapped.start_pos)
 
         return obs
 
@@ -192,7 +196,6 @@ class GetImportantInteractions(Wrapper):
         self.keys = {}
         self.boxes = {}
         self.carrying = False
-        self.past_interactions = None
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
@@ -201,7 +204,7 @@ class GetImportantInteractions(Wrapper):
         self.check_objects()
 
         if done:
-            self.past_interactions = {
+            info['interactions'] = {
                 "doors": deepcopy(self.doors),
                 "keys": deepcopy(self.keys),
                 "boxes": deepcopy(self.boxes),
@@ -295,9 +298,6 @@ class GetImportantInteractions(Wrapper):
 
     def seed(self, seed=None):
         self.env.seed(seed=seed)
-
-    def get_interactions(self):
-        return self.past_interactions
 
 
 class ExploreActions(gym.core.Wrapper):
@@ -457,7 +457,7 @@ def main():
         "--env-name",
         dest="env_name",
         help="gym environment to load",
-        default='MiniGrid-BlockedUnlockPickup-v0'
+        default='MiniGrid-Empty-6x6-v0'
     )
     (options, args) = parser.parse_args()
 
@@ -512,6 +512,7 @@ def main():
         print(env.keys)
         print(env.boxes)
         print(env.balls)
+        print(env.unwrapped.agent_pos)
 
         print('step=%s, reward=%.2f' % (env.unwrapped.step_count, reward))
 

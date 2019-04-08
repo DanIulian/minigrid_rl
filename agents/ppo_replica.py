@@ -32,7 +32,7 @@ class PPO(BaseAlgov2):
         reshape_reward = kwargs.get("reshape_reward", None)
 
         super().__init__(
-            envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
+            envs, acmodel, num_frames_per_proc, discount, optimizer_args.lr, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward)
 
         self.clip_eps = clip_eps

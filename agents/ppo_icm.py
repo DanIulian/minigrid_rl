@@ -2,15 +2,11 @@
     DanM 2019
     inspired from https://github.com/lcswillems/torch-rl
 """
-
 import numpy as np
-import torch
-import torch.nn.functional as F
 import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_rl
 from argparse import Namespace
 from copy import deepcopy
 
@@ -18,7 +14,6 @@ from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 from utils.format import preprocess_images
-from torch.distributions.categorical import Categorical
 
 
 class PPOIcm(TwoValueHeadsBaseGeneral):
@@ -80,17 +75,21 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.optimizer_evaluator = getattr(torch.optim, optimizer)(
             self.acmodel.evaluator_network.parameters(), **optimizer_args)
 
+        self.optimizer_evaluator_base = getattr(torch.optim, optimizer)(
+            self.acmodel.base_evaluator_network.parameters(), **optimizer_args)
+
+
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
             self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
             self.optimizer_evaluator.load_state_dict(agent_data["optimizer_evaluator"])
+            self.optimizer_evaluator_base.load_state_dict(agent_data["optimizer_evaluator_base"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
         self.batch_num = 0
         self.updates_cnt = 0
 
         # get width and height of the observation space for position normalization
-
         self.env_width = envs[0][0].unwrapped.width
         self.env_height = envs[0][0].unwrapped.height
 
@@ -160,7 +159,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         def gen_memory(ss):
             return torch.zeros(num_frames_per_proc, num_procs, ss, device=device)
-
 
         frame_exp.agworld_mems = gen_memory(agworld_network.memory_size)
         frame_exp.agworld_embs = gen_memory(agworld_network.embedding_size)
@@ -439,16 +437,15 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         agworld_network = self.acmodel.curiosity_model
         evaluator_network = self.acmodel.evaluator_network
+        base_eval_network = self.acmodel.base_evaluator_network
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
-        env = self.env
         beta = 0.2  # loss factor for Forward and Dynamics Models
 
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
-        shape = torch.Size([num_procs, num_frames_per_proc])
         f, prev_frame_exps = self.augment_exp(exps)
         # ------------------------------------------------------------------------------------------
         if self.pre_fill_memories:
@@ -491,8 +488,9 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         # TODO fix the last intrinsic reward value as it is pred - 0
         dst_intrinsic_r = (pred_next_state[1:] - next_state[1:]).detach().pow(2).sum(2)
+
         # --Normalize intrinsic reward
-        # self.predictor_rff.reset() # do you have to rest it every time ???
+        self.predictor_rff.reset() # do you have to rest it every time ???
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
 
         for i in reversed(range(self.num_frames_per_proc)):
@@ -505,8 +503,10 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # ------------------------------------------------------------------------------------------
         # -- Optimize ICM
         optimizer_evaluator = self.optimizer_evaluator
+        optimizer_evaluator_base = self.optimizer_evaluator_base
         optimizer_agworld = self.optimizer_agworld
         recurrence_worlds = self.recurrence_worlds
+
         max_grad_norm = self.max_grad_norm
 
         # ------------------------------------------------------------------------------------------
@@ -516,7 +516,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         loss_m_state = torch.nn.MSELoss()
         loss_m_act = torch.nn.CrossEntropyLoss()
-        loss_m_eval = torch.nn.MSELoss() #  TODO change to cross-entropy
+        loss_m_eval = torch.nn.CrossEntropyLoss()
+        loss_m_eval_base = torch.nn.CrossEntropyLoss()
 
         log_state_loss = []
         log_state_loss_same = []
@@ -527,6 +528,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         log_act_loss_diffs = []
 
         log_evaluator_loss = []
+        log_base_evaluator_loss = []
 
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
@@ -542,6 +544,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             act_batch_loss_same = 0
             act_batch_loss_diff = 0
             evaluator_batch_loss = 0
+            evaluator_base_batch_loss = 0
 
             log_grad_agworld_norm = []
             log_grad_eval_norm = []
@@ -558,9 +561,18 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                     obs, agworld_mem * mask, prev_actions_one)
                 new_agworld_mem[i] = agworld_mem
 
-                # Compute loss for evaluator
+                # Compute loss for evaluator using cross entropy loss
                 pred_pos = evaluator_network(new_agworld_mem[i].detach())
-                evaluator_batch_loss += loss_m_eval(pred_pos, pos)
+                target_pos = (self.env_width * pos[:, 0] + pos[:, 1]).type(torch.long)
+                evaluator_batch_loss += loss_m_eval(pred_pos, target_pos)
+
+                # Compute loss for a random input using cross entropy to obtain a base
+                # for evaluator
+                random_input = torch.rand_like(new_agworld_mem[i].detach())
+                pred_pos_base = base_eval_network(random_input)
+                target_pos_base = (self.env_width * pos[:, 0] + pos[:, 1]).type(torch.long)
+                evaluator_base_batch_loss += loss_m_eval_base(pred_pos_base, target_pos_base)
+
 
             # Go back and predict action(t) given state(t) & embedding (t+1)
             # and predict state(t + 1) given state(t) and action(t)
@@ -616,6 +628,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             act_batch_loss /= (recurrence_worlds - 1)
             state_batch_loss /= (recurrence_worlds - 1)
             evaluator_batch_loss /= recurrence_worlds
+            evaluator_base_batch_loss /= recurrence_worlds
 
             act_batch_loss_same /= (recurrence_worlds - 1)
             act_batch_loss_diff /= (recurrence_worlds - 1)
@@ -627,11 +640,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
             optimizer_agworld.zero_grad()
             optimizer_evaluator.zero_grad()
+            optimizer_evaluator_base.zero_grad()
 
             ag_loss.backward()
             evaluator_batch_loss.backward()
-
-            #evaluator_batch_loss.backward()
+            evaluator_base_batch_loss.backward()
 
             grad_agworld_norm = sum(
                 p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
@@ -644,11 +657,14 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
             torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
             torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(base_eval_network.parameters(), max_grad_norm)
 
             #log some shit
             log_act_loss.append(act_batch_loss.item())
             log_state_loss.append(state_batch_loss.item())
             log_evaluator_loss.append(evaluator_batch_loss.item())
+            log_base_evaluator_loss.append(evaluator_base_batch_loss.item())
+
             log_grad_agworld_norm.append(grad_agworld_norm)
             log_grad_eval_norm.append(grad_eval_norm)
 
@@ -660,12 +676,14 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
             optimizer_evaluator.step()
             optimizer_agworld.step()
+            optimizer_evaluator_base.step()
 
         # ------------------------------------------------------------------------------------------
         # Log some values
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
         self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
         self.aux_logs['position_loss'] = np.mean(log_evaluator_loss)
+        self.aux_logs['base_positon_loss'] = np.mean(log_base_evaluator_loss)
         self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
         self.aux_logs['grad_norm_pos'] = np.mean(log_grad_eval_norm)
 
@@ -679,12 +697,20 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
     def add_extra_experience(self, exps: DictList):
         # Process
-        full_states = [self.obss[i][j]["position"]
+        full_positions = [self.obss[i][j]["position"]
+                       for j in range(self.num_procs)
+                       for i in range(self.num_frames_per_proc)]
+        # Process
+        full_states = [self.obss[i][j]["state"]
                        for j in range(self.num_procs)
                        for i in range(self.num_frames_per_proc)]
 
+        exps.states = preprocess_images(full_states, device=self.device)
         max_pos_value = max(self.env_height, self.env_width)
-        exps.position = preprocess_images(full_states, device=self.device, max_image_value=max_pos_value)
+        exps.position = preprocess_images(full_positions,
+                                          device=self.device,
+                                          max_image_value=max_pos_value,
+                                          normalize=False)
         exps.obs_image = exps.obs.image
 
     def evaluate(self):
@@ -719,10 +745,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         loss_m_nstate = torch.nn.MSELoss()
 
         transitions = []
-        envworld_batch_loss = 0
         steps = 200
-
-        max_pos_value = max(self.env_width, self.env_height)
 
         for i in range(steps):
 
@@ -733,8 +756,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             pos_batch = preprocess_images(
                 [obs[i]['position'] for i in  range(len(obs))],
                 device=device,
-                max_image_value=max_pos_value
-            ) * max_pos_value
+                normalize=False
+            )
 
             with torch.no_grad():
                 if recurrent:
@@ -756,8 +779,9 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                 pred_state = agworld_network.forward_state(eval_ag_memory, crt_actions)
 
                 # Evaluation network
-                pred_position = evaluator_network(eval_ag_memory.detach()) * max_pos_value
-
+                pred_position = F.softmax(
+                    evaluator_network(eval_ag_memory.detach()),
+                    dim=1)
                 prev_agworld_mem = eval_ag_memory
 
             next_obs, reward, done, _ = env.step(action.cpu().numpy())
@@ -782,8 +806,3 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.acmodel.train()
 
         return None
-
-
-
-
-
