@@ -33,6 +33,10 @@ def include_position(env):
     return RecordPosition(env)
 
 
+def get_interactions(env):
+    return GetImportantInteractions(env)
+
+
 class RecordingBehaviour(Wrapper):
     '''
     When finished collecting information call get_behaviour()
@@ -156,19 +160,143 @@ def bfs(grid, start, target):
 
 
 class RecordPosition(Wrapper):
+    """
+    Embed into the observation the position of the agent
+    on the map
+    """
     def __init__(self, env):
         super(RecordPosition, self).__init__(env)
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
-        observation["position"] = np.array(self.env.agent_pos)
+        observation["position"] = np.array(self.env.unwrapped.agent_pos)
 
         return observation, reward, done, info
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
-        obs["position"] = np.array(self.env.start_pos)
+        obs["position"] = np.array(self.env.unwrapped.start_pos)
 
+        return obs
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
+
+
+class GetImportantInteractions(Wrapper):
+    '''
+    Wrapper that saves important interactions with the environment
+    It counts the number of pick-ups and put-downs for each object
+    (keys, balls, boxes), and how many times a door is opened
+    '''
+
+    def __init__(self, env):
+        super(GetImportantInteractions, self).__init__(env)
+
+        self.grid = None
+        self.doors = {}
+        self.balls = {}
+        self.keys = {}
+        self.boxes = {}
+        self.carrying = False
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+
+        self.check_doors()
+        self.check_objects()
+
+        if done:
+            info['interactions'] = {
+                "doors": deepcopy(self.doors),
+                "keys": deepcopy(self.keys),
+                "boxes": deepcopy(self.boxes),
+                "balls": deepcopy(self.balls)
+            }
+
+        return observation, reward, done, info
+
+    def check_doors(self):
+        '''
+        Check if a door was opened or closed and log the interaction
+        '''
+        for door_pos in self.doors:
+            door = self.grid.get(door_pos[0], door_pos[1])
+            if self.doors[door_pos]["is_opened"] != door.is_open:
+                self.doors[door_pos]["is_opened"] = door.is_open
+                if door.is_open:
+                    self.doors[door_pos]["nr_opened"] += 1
+                else:
+                    self.doors[door_pos]["nr_closed"] += 1
+
+    def check_objects(self):
+        '''
+        Check if the agent picked up or putted down an object and
+        log the interaction
+        '''
+
+        if (not self.carrying) and self.env.unwrapped.carrying:
+            self.carrying = True
+            obj = self.env.unwrapped.carrying
+            if obj.type == 'key':
+                self.keys[obj.color]["nr_picked_up"] += 1
+            elif obj.type == 'ball':
+                self.balls[obj.color]["nr_picked_up"] += 1
+            elif obj.type == 'box':
+                self.boxes[obj.color]["nr_picked_up"] += 1
+
+        elif self.carrying and (self.env.unwrapped.carrying is None):
+            self.carrying = False
+            for c in self.keys:
+                if self.keys[c]["nr_picked_up"] > self.keys[c]["nr_put_down"]:
+                    self.keys[c]["nr_put_down"] += 1
+                    return
+            for c in self.boxes:
+                if self.boxes[c]["nr_picked_up"] > self.boxes[c]["nr_put_down"]:
+                    self.boxes[c]["nr_put_down"] += 1
+                    return
+            for c in self.balls:
+                if self.balls[c]["nr_picked_up"] > self.balls[c]["nr_put_down"]:
+                    self.balls[c]["nr_put_down"] += 1
+                    return
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+
+        self.doors = {}
+        self.balls = {}
+        self.keys = {}
+        self.boxes = {}
+        self.carrying = False
+
+        self.grid = self.env.unwrapped.grid
+
+        for i in range(self.grid.width):
+            for j in range(self.grid.height):
+                v = self.grid.get(i, j)
+
+                if v:
+                    if v.type == 'door':
+                        self.doors[(i, j)] = {
+                            "is_opened": v.is_open,
+                            "nr_opened": 0,
+                            "nr_closed": 0
+                        }
+                    elif v.type == 'key':
+                        self.keys[v.color] = {
+                            "nr_picked_up": 0,
+                            "nr_put_down": 0,
+                        }
+                    elif v.type == 'ball':
+                        self.balls[v.color] = {
+                            "nr_picked_up": 0,
+                            "nr_put_down": 0,
+                        }
+                    elif v.type == 'box':
+                        self.boxes[v.color] = {
+                            "nr_picked_up": 0,
+                            "nr_put_down": 0,
+                        }
         return obs
 
     def seed(self, seed=None):
@@ -332,13 +460,14 @@ def main():
         "--env-name",
         dest="env_name",
         help="gym environment to load",
-        default='MiniGrid-MultiRoom-N6-v0'
+        default='MiniGrid-Empty-6x6-v0'
     )
     (options, args) = parser.parse_args()
 
     # Load the gym environment
     env = gym.make(options.env_name)
-    env = RecordingBehaviour(env)
+    env = RecordPosition(env)
+    env = GetImportantInteractions(env)
 
     def resetEnv():
         env.reset()
@@ -382,6 +511,11 @@ def main():
             return
 
         obs, reward, done, info = env.step(action)
+        print(env.doors)
+        print(env.keys)
+        print(env.boxes)
+        print(env.balls)
+        print(env.unwrapped.agent_pos)
 
         print('step=%s, reward=%.2f' % (env.unwrapped.step_count, reward))
 

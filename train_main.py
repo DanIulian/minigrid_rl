@@ -135,7 +135,7 @@ def run(full_args: Namespace) -> None:
 
     envs = []
 
-    # Get env wrapper
+    # Get env wrappers - must be a list of elements
     wrapper_method = getattr(full_args.env_cfg, "wrapper", None)
     if wrapper_method is None:
         def idem(x):
@@ -143,7 +143,6 @@ def run(full_args: Namespace) -> None:
         env_wrapper = idem
     else:
         env_wrappers = [getattr(gym_wrappers, w_p) for w_p in wrapper_method]
-
         def env_wrapp(w_env):
             for wrapper in env_wrappers[::-1]:
                 w_env = wrapper(w_env)
@@ -195,6 +194,10 @@ def run(full_args: Namespace) -> None:
 
         # Add full size shape
         add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
+
+    # Add the width and height of environment for position estimation
+    model_args.width = first_env.unwrapped.width
+    model_args.height = first_env.unwrapped.height
 
     # ==============================================================================================
     # Load training status

@@ -20,7 +20,11 @@ class ICMModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.evaluator_network = EvaluationNet(cfg,
                                                self.curiosity_model.memory_size,
-                                               2)
+                                               cfg.width * cfg.height)
+
+        self.base_evaluator_network = EvaluationNet(cfg,
+                                                    self.curiosity_model.memory_size,
+                                                    cfg.width * cfg.height)
 
         self.memory_type = self.policy_model.memory_type
         self.use_text = self.policy_model.use_text
@@ -49,16 +53,19 @@ class WorldsPolicyModel(nn.Module, torch_rl.RecurrentACModel):
 
         # Define image embedding
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (2, 2)),
-            nn.ReLU(),
+            nn.Conv2d(3, 16, (3, 3)),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
             nn.Conv2d(16, 32, (2, 2)),
-            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, (2, 2)),
-            nn.ReLU()
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
         )
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        self.image_embedding_size = ((n-1)-2)*((m-1)-2)*64
+        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2)*64
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
@@ -88,12 +95,12 @@ class WorldsPolicyModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.fc2_val = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         self.fc2_act = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         # Define heads
@@ -158,8 +165,8 @@ class CuriosityModel(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        hidden_size = 256  # getattr(cfg, "hidden_size", 256)
-        self._memory_size = memory_size = 128  # getattr(cfg, "memory_size", 256)
+        hidden_size = getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 256)
         channels = 3
         self.action_space = torch.Size((action_space.n, ))
 
@@ -168,13 +175,13 @@ class CuriosityModel(nn.Module):
         self.image_conv = nn.Sequential(
             nn.Conv2d(channels, 16, (3, 3)),
             nn.BatchNorm2d(16),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(inplace=True),
             nn.Conv2d(16, 32, (2, 2)),
             nn.BatchNorm2d(32),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(inplace=True),
             nn.Conv2d(32, 64, (2, 2)),
             nn.BatchNorm2d(64),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(inplace=True),
         )
 
         image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
@@ -193,18 +200,18 @@ class CuriosityModel(nn.Module):
         self.fc_beta = nn.Sequential(
             nn.Linear(memory_size + embedding_size, memory_size),  # bt + z_t+1
             # nn.Linear(hidden_size + hidden_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, action_space.n),
         )
 
         # Forward dynamics prediction
         self.fc_alpha = nn.Sequential(
             nn.Linear(memory_size + action_space.n, memory_size),  # bt + at
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, memory_size)
         )
 
@@ -252,14 +259,12 @@ class EvaluationNet(nn.Module):
         hidden_size = getattr(cfg, "hidden_size", 256)
         self.fc1 = nn.Sequential(
             nn.Linear(obs_space, hidden_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(hidden_size, out_space),
-            nn.ReLU()
         )
 
     def forward(self, x):
         x = self.fc1(x)
-
         return x
 
 
