@@ -219,7 +219,6 @@ def visualize_embeddings(file_path):
 def play_experience(file_path: str, env_id: int = 0, build_website: bool = True):
     from analytics.make_site import make_website
 
-    file_path = "results/2019Apr04-212553_default/eval/f_0"
     data = torch.load(file_path)
     data = data.__dict__
 
