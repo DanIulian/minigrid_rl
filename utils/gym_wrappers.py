@@ -26,7 +26,7 @@ def get_action_bonus_only(env):
 
 
 def get_action_bonus(env):
-    return ActionBonus(env, only_bonus=True)
+    return ActionBonus(env, only_bonus=False)
 
 
 def include_position(env):
@@ -432,7 +432,7 @@ class ActionBonus(gym.core.Wrapper):
         obs, reward, done, info = self.env.step(action)
 
         env = self.unwrapped
-        tup = (env.agentPos, env.agentDir, env.carrying, action)
+        tup = (env.agentPos, env.agentDir, env.carrying.type, env.carrying.color,  action)
 
         # Get the count for this (s,a) pair
         preCnt = 0
@@ -451,6 +451,10 @@ class ActionBonus(gym.core.Wrapper):
         reward += bonus
 
         return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        self.counts = {}
+        return self.env.reset(**kwargs)
 
 
 def main():

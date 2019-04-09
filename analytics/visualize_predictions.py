@@ -216,7 +216,8 @@ def visualize_embeddings(file_path):
     plt.show()
 
 
-def play_experience(file_path: str, env_id: int = 0, build_website: bool = True):
+def play_experience(file_path: str, env_id: int = 0, build_website: bool = True,
+                    show_pre: int = 3, show_post: int = 3):
     from analytics.make_site import make_website
 
     data = torch.load(file_path)
@@ -340,7 +341,7 @@ def play_experience(file_path: str, env_id: int = 0, build_website: bool = True)
 
             for s, p in select:
                 img = draw_exp(s, data[kstates][:, p], data[kobs][:, p], data[kaction][:, p],
-                               show_pre=0, show_post=3, state_decoder=state_decoder)
+                               show_pre=show_pre, show_post=show_post, state_decoder=state_decoder)
                 elements += [(etypes.img, img)]
 
         make_website(out_folder, elements)
