@@ -195,9 +195,11 @@ class GetImportantInteractions(Wrapper):
 
         self.grid = None
         self.doors = {}
-        self.balls = {}
-        self.keys = {}
-        self.boxes = {}
+        self.objects = {
+            "ball": {},
+            "box": {},
+            "key": {}
+        }
         self.carrying = False
 
     def step(self, action):
@@ -209,9 +211,9 @@ class GetImportantInteractions(Wrapper):
         if done:
             info['interactions'] = {
                 "doors": deepcopy(self.doors),
-                "keys": deepcopy(self.keys),
-                "boxes": deepcopy(self.boxes),
-                "balls": deepcopy(self.balls)
+                "keys": deepcopy(self.objects['key']),
+                "boxes": deepcopy(self.objects['box']),
+                "balls": deepcopy(self.objects['ball']),
             }
 
         return observation, reward, done, info
@@ -234,43 +236,34 @@ class GetImportantInteractions(Wrapper):
         Check if the agent picked up or putted down an object and
         log the interaction
         '''
-
         if (not self.carrying) and self.env.unwrapped.carrying:
             self.carrying = True
             obj = self.env.unwrapped.carrying
-            if obj.type == 'key':
-                self.keys[obj.color]["nr_picked_up"] += 1
-            elif obj.type == 'ball':
-                self.balls[obj.color]["nr_picked_up"] += 1
-            elif obj.type == 'box':
-                self.boxes[obj.color]["nr_picked_up"] += 1
+            obj_pos = tuple(obj.init_pos)
+            self.objects[obj.type][obj_pos]["nr_picked_up"] += 1
 
         elif self.carrying and (self.env.unwrapped.carrying is None):
             self.carrying = False
-            for c in self.keys:
-                if self.keys[c]["nr_picked_up"] > self.keys[c]["nr_put_down"]:
-                    self.keys[c]["nr_put_down"] += 1
-                    return
-            for c in self.boxes:
-                if self.boxes[c]["nr_picked_up"] > self.boxes[c]["nr_put_down"]:
-                    self.boxes[c]["nr_put_down"] += 1
-                    return
-            for c in self.balls:
-                if self.balls[c]["nr_picked_up"] > self.balls[c]["nr_put_down"]:
-                    self.balls[c]["nr_put_down"] += 1
-                    return
+            for obj_type in self.objects:
+                for obj_pos in self.objects[obj_type]:
+                    if self.objects[obj_type][obj_pos]["nr_picked_up"] >\
+                            self.objects[obj_type][obj_pos]["nr_put_down"]:
+                        self.objects[obj_type][obj_pos]["nr_put_down"] += 1
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
 
         self.doors = {}
-        self.balls = {}
-        self.keys = {}
-        self.boxes = {}
-        self.carrying = False
+        self.objects = {
+            "ball": {},
+            "box": {},
+            "key": {}
+        }
 
+        self.carrying = False
         self.grid = self.env.unwrapped.grid
 
+        # get all objects from the grid
         for i in range(self.grid.width):
             for j in range(self.grid.height):
                 v = self.grid.get(i, j)
@@ -282,21 +275,27 @@ class GetImportantInteractions(Wrapper):
                             "nr_opened": 0,
                             "nr_closed": 0
                         }
-                    elif v.type == 'key':
-                        self.keys[v.color] = {
+                    elif (v.type == 'key') or (v.type == 'box') or (v.type == 'ball'):
+
+                        self.objects[v.type][(i, j)] = {
+                            "color": v.color,
                             "nr_picked_up": 0,
-                            "nr_put_down": 0,
+                            "nr_put_down": 0
                         }
-                    elif v.type == 'ball':
-                        self.balls[v.color] = {
-                            "nr_picked_up": 0,
-                            "nr_put_down": 0,
-                        }
-                    elif v.type == 'box':
-                        self.boxes[v.color] = {
-                            "nr_picked_up": 0,
-                            "nr_put_down": 0,
-                        }
+                        # check if there is a key inside the box
+                        if v.contains:
+                            in_obj = v.contains
+                            self.objects[in_obj.type][(i, j)] = {
+                                "color": in_obj.color,
+                                "nr_picked_up": 0,
+                                "nr_put_down": 0
+                            }
+                            if in_obj.init_pos is None:
+                                in_obj.init_pos = np.array([i, j])
+
+                        # if initial position for object is not present, add it
+                        if v.init_pos is None:
+                            v.init_pos = np.array([i, j])
         return obs
 
     def seed(self, seed=None):
@@ -516,9 +515,7 @@ def main():
 
         obs, reward, done, info = env.step(action)
         print(env.doors)
-        print(env.keys)
-        print(env.boxes)
-        print(env.balls)
+        print(env.objects)
         print(env.unwrapped.agent_pos)
 
         print('step=%s, reward=%.2f' % (env.unwrapped.step_count, reward))
