@@ -635,9 +635,9 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     same = (obs[next_mask] == next_obs[next_mask]).all(1).all(1).all(1)
                     s_act_predict = pred_a[next_mask]
                     s_crt_actions = crt_a[next_mask]
-
-                    agworld_batch_loss_same += loss_m_ag_ap_cross(s_act_predict[same], s_crt_actions[same])
-                    agworld_batch_loss_diff += loss_m_ag_ap_cross(s_act_predict[~same], s_crt_actions[~same])
+                    if same.sum() != same.size(0):
+                        agworld_batch_loss_same += loss_m_ag_ap_cross(s_act_predict[same], s_crt_actions[same])
+                        agworld_batch_loss_diff += loss_m_ag_ap_cross(s_act_predict[~same], s_crt_actions[~same])
 
                     pred_state = agstate_network.predict_state(agstate_mem, f.actions_onehot[inds + i])
                     ags_sp_batch_loss += loss_m_agstate_p(pred_state[next_mask],
@@ -665,11 +665,11 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                             same = (obs[mask] == next_obs[mask]).all(1).all(1).all(1)
                             s_act_predict = pred_act_hist[mask]
                             s_crt_actions = action_hist[mask]
-
-                            agworld_batch_loss_same += loss_m_agstate(s_act_predict[same],
-                                                                     s_crt_actions[same])
-                            agworld_batch_loss_diff += loss_m_agstate(s_act_predict[~same],
-                                                                     s_crt_actions[~same])
+                            if same.sum() != same.size(0):
+                                agworld_batch_loss_same += loss_m_agstate(s_act_predict[same],
+                                                                         s_crt_actions[same])
+                                agworld_batch_loss_diff += loss_m_agstate(s_act_predict[~same],
+                                                                         s_crt_actions[~same])
 
                         # --------------------------------------------------------------------------
                         # agstate_batch_loss += (pred_act_hist[mask] - action_hist[mask]).abs().mean()
