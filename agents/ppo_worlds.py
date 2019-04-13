@@ -115,6 +115,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.intrinsic_gaps = getattr(cfg, "intrinsic_gaps", [1, 2, 3])
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 0)
         self.action_pred_factor = getattr(cfg, "action_pred_factor", False)
+        self.norm_iR_rnd_style = getattr(cfg, "norm_iR_rnd_style", False)
 
         gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
         gap_prob = torch.ones(max_pred_gap)
@@ -529,7 +530,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         loss_m_eworld = torch.nn.MSELoss()
         loss_m_eval = torch.nn.MSELoss()
-        loss_m_aworld = torch.nn.CrossEntropyLoss()
+        loss_m_ag_ap_cross = torch.nn.CrossEntropyLoss()
         loss_m_agstate = torch.nn.MSELoss()
         loss_m_agstate_p = torch.nn.MSELoss()
         loss_m_triplet = TripletLoss(distance_margin)
@@ -543,8 +544,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         agworld_batch_loss_diffs = []
 
         log_agworld_loss = []
-        log_agstate_loss = []
-        log_agstate_p_loss = []
+        log_agstate_ap_loss = []
+        log_agstate_sp_loss = []
         log_distance_loss = []
 
         grad_envworld_norm = []
@@ -580,8 +581,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
             mem_distance_batch_loss = torch.zeros(1, device=device)[0]
 
-            agstate_batch_loss = torch.zeros(1, device=device)[0]
-            agstate_p_batch_loss = torch.zeros(1, device=device)[0]
+            ags_ap_batch_loss = torch.zeros(1, device=device)[0]
+            ags_sp_batch_loss = torch.zeros(1, device=device)[0]
 
             agh_batch_loss = torch.zeros(1, device=device)[0]
             agh_eval_batch_loss = torch.zeros(1, device=device)[0]
@@ -625,7 +626,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                     pred_a = agstate_network.forward_action(agstate_mem, agworld_mems[i + gap_size])
 
-                    agstate_batch_loss += loss_m_aworld(pred_a[next_mask], crt_a[next_mask])
+                    ags_ap_batch_loss += loss_m_ag_ap_cross(pred_a[next_mask], crt_a[next_mask])
 
                     # Let's try some cross entropy
                     # Check loss for same / diff obs
@@ -635,11 +636,11 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     s_act_predict = pred_a[next_mask]
                     s_crt_actions = crt_a[next_mask]
 
-                    agworld_batch_loss_same += loss_m_aworld(s_act_predict[same], s_crt_actions[same])
-                    agworld_batch_loss_diff += loss_m_aworld(s_act_predict[~same], s_crt_actions[~same])
+                    agworld_batch_loss_same += loss_m_ag_ap_cross(s_act_predict[same], s_crt_actions[same])
+                    agworld_batch_loss_diff += loss_m_ag_ap_cross(s_act_predict[~same], s_crt_actions[~same])
 
                     pred_state = agstate_network.predict_state(agstate_mem, f.actions_onehot[inds + i])
-                    agstate_p_batch_loss += loss_m_agstate_p(pred_state[next_mask],
+                    ags_sp_batch_loss += loss_m_agstate_p(pred_state[next_mask],
                                                              agworld_mems[i + gap_size][next_mask])
 
                 else:
@@ -655,7 +656,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                         pred_act_hist = agstate_network.forward_action(agstate_mem,
                                                                        agworld_mems[i + gap_size])
 
-                        agstate_batch_loss += loss_m_agstate(pred_act_hist[mask], action_hist[mask])
+                        ags_ap_batch_loss += loss_m_agstate(pred_act_hist[mask], action_hist[mask])
 
                         # --------------------------------------------------------------------------
                         if gap_size == 1:
@@ -690,12 +691,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                                                                         None)
 
                             pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
-                            agstate_p_batch_loss += loss_m_agstate_p(pred_state,
+                            ags_sp_batch_loss += loss_m_agstate_p(pred_state,
                                                                      agworld_mems[i + gap_size][mask])
 
                         else:
                             pred_state = agstate_network.predict_state(agstate_mem, action_hist)
-                            agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
+                            ags_sp_batch_loss += loss_m_agstate_p(pred_state[mask],
                                                                      agworld_mems[i + gap_size][mask])
                             # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
                             #                                          f.agstate_mems[inds + i + gap_size][
@@ -712,12 +713,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             agworld_batch_loss_diff /= recurrence_worlds
 
             # agworld_batch_loss /= recurrence_worlds
-            agstate_batch_loss /= recurrence_worlds
-            agstate_p_batch_loss /= recurrence_worlds
+            ags_ap_batch_loss /= recurrence_worlds
+            ags_sp_batch_loss /= recurrence_worlds
 
             mem_distance_batch_loss /= recurrence_worlds
 
-            w_loss = agstate_batch_loss * 100 + mem_distance_batch_loss + agstate_p_batch_loss
+            w_loss = ags_ap_batch_loss + mem_distance_batch_loss + ags_sp_batch_loss
 
             optimizer_agworld.zero_grad()
             optimizer_agstate.zero_grad()
@@ -742,8 +743,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             agworld_batch_loss_sames.append(agworld_batch_loss_same.item())
             agworld_batch_loss_diffs.append(agworld_batch_loss_diff.item())
 
-            log_agstate_loss.append(agstate_batch_loss.item())
-            log_agstate_p_loss.append(agstate_p_batch_loss.item())
+            log_agstate_ap_loss.append(ags_ap_batch_loss.item())
+            log_agstate_sp_loss.append(ags_sp_batch_loss.item())
 
             log_distance_loss.append(mem_distance_batch_loss.item())
 
@@ -960,8 +961,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         # logs["envworld_loss"] = np.mean(log_envworld_loss)
         # logs["agworld_loss"] = np.mean(log_agworld_loss)
-        logs["agstate_loss"] = np.mean(log_agstate_loss)
-        logs["agstate_p_loss"] = np.mean(log_agstate_p_loss)
+        logs["agstate_ap_loss"] = np.mean(log_agstate_ap_loss)
+        logs["agstate_sp_loss"] = np.mean(log_agstate_sp_loss)
         logs["agstate_distance_loss"] = np.mean(log_distance_loss)
 
         # logs["log_agworld_emb_loss"] = np.mean(log_agworld_emb_loss)
@@ -1384,10 +1385,11 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     rms = torch.sqrt(self.predictor_rms_g[gap_i].var).to(dst_intrinsic_r.device)
                     dst_intrinsic_r_t.div_(rms)
 
-                    mean, std, mmax = get_stats(dst_intrinsic_r_t)
-                    print(f"Gap {gap_size} SP rms: {rms.item():.6f} | "
-                          f"ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
-                else:
+                    if save:
+                        mean, std, mmax = get_stats(dst_intrinsic_r_t)
+                        print(f"Gap {gap_size} SP rms: {rms.item():.6f} | "
+                              f"ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
+                elif save:
                     if action_pred_factor:
                         mean, std, mmax = get_stats(dst_intrinsic_r_a)
                         r_a = f" | AP: ysM: {mean:.3f} {std:.3f} {mmax:.3f}"
@@ -1397,7 +1399,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     mean, std, mmax = get_stats(dst_intrinsic_r_t)
                     print(f"Gap {gap_size} | SP ysM: {mean:.6f} {std:.6f} {mmax:.6f}" + r_a)
 
-                if gap_size == 1:
+                if gap_size == 1 and save:
                     for i in range(no_actions):
                         actions = (f.action == i).type(torch.cuda.ByteTensor)
 
@@ -1421,7 +1423,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     dst_intrinsic_r_a = dst_intrinsic_r_a.max() * 1.2 - dst_intrinsic_r_a
 
                     # dst_intrinsic_r_t.sub_(dst_intrinsic_r_a)
-                    dst_intrinsic_r_t.mul_(dst_intrinsic_r_a)
+                    # dst_intrinsic_r_t.mul_(dst_intrinsic_r_a)
 
                     # mean, std, mmax = get_stats(dst_intrinsic_r_t)
                     # print(f"Gap {gap_size} SP ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
@@ -1448,35 +1450,39 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                 rms = torch.sqrt(self.predictor_rms_a[i].var).to(dst_intrinsic_r.device)
 
                 actions = actions.float()
-                print(f"Action {i} rms:", rms.item())
+
+                if save:
+                    print(f"Action {i} rms:", rms.item())
+
                 rms = rms * actions + (1-actions)
                 dst_intrinsic_r.div_(rms)
 
         # ------------------------------------------------------------------------------------------
         # Normalize intrinsic reward
+        if self.norm_iR_rnd_style:
+            self.predictor_rff.reset()  # do you have to rest it every time ???
 
-        # self.predictor_rff.reset()  # do you have to rest it every time ???
-        #
-        # int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
-        #
-        # for i in reversed(range(self.num_frames_per_proc)):
-        #     int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
-        #
-        # self.predictor_rms.update(int_rff.view(-1))
-        # # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
-        # rms = torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device)
-        # dst_intrinsic_r.div_(rms)
+            int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
+
+            for i in reversed(range(self.num_frames_per_proc)):
+                int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
+
+            self.predictor_rms.update(int_rff.view(-1))
+            # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
+            rms = torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device)
+            dst_intrinsic_r.div_(rms)
+        else:
+            self.predictor_rms.update(dst_intrinsic_r.view(-1))
+            # self.predictor_rms.update(dst_intrinsic_r.max(1)[0].view(-1))
+            # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
+            rms = torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device)
+            dst_intrinsic_r.div_(rms)
+
         # ------------------------------------------------------------------------------------------
-        self.predictor_rms.update(dst_intrinsic_r.view(-1))
-        # self.predictor_rms.update(dst_intrinsic_r.max(1)[0].view(-1))
-        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
-        rms = torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device)
-        dst_intrinsic_r.div_(rms)
 
-        # ------------------------------------------------------------------------------------------
-
-        mean, std, mmax = get_stats(dst_intrinsic_r)
-        print(f"IR ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
+        if save:
+            mean, std, mmax = get_stats(dst_intrinsic_r)
+            print(f"IR ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
 
         # ------------------------------------------------------------------------------------------
 

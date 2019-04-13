@@ -1,34 +1,36 @@
 main:
-  env: MiniGrid-Empty-5x5-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-DoorKey-16x16-v0 # MiniGrid-DoorKey-16x16-v0 # MiniGrid-BlockedUnlockPickup-v0
+ #MiniGrid-BlockedUnlockPickup-v1 # required=True, help="name of the environment to trainon (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
-  procs: 256 # type=int, default=16, help="number of processes (default: 16)") # number of envs
-  actual_procs: 12 # type=int, default=16, help="number of processes (default: 16)")
-  frames: 2.e+7 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  procs: 64 # type=int, default=16, help="number of processes (default: 16)") # number of envs
+  actual_procs: 8 # type=int, default=16, help="number of processes (default: 16)")
+  frames: 2.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
-  eval_interval: 5
+  eval_interval: 10
   save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
   tb: false # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
   max_eprews: 1.93 # Cap training when mean episode rewards reaches this value
-  save_best: true
+  save_best: fasle
   save_all: fasle
 
 env_cfg:
-  max_episode_steps: 1000 # environment steps
+  max_episode_steps: 400 # environment steps
   max_image_value: 15.
   normalize: true
-  wrapper: include_full_state
+  wrapper: ["get_interactions", "include_full_state"] #, "get_action_bonus"]
   no_eval_envs: 4
   no_actions: 6 # 7 is for done
 
 agent:
   name: PPOWorlds
-  frames_per_proc: 100 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
+  frames_per_proc: 104 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   optimizer: RMSprop
   optimizer_args:
-    lr: 0.0003
+    lr: 0.0007
+    eps: 1.e-5
 
   gae_lambda: 0.95 # type=float, default=0.95, help="lambda coefficient in GAE formula (default: 0.95, 1 means no gae)")
   entropy_coef: 0.001 # type=float, default=0.01, help="entropy term coefficient (default: 0.01)")
@@ -36,7 +38,7 @@ agent:
   max_grad_norm: 0.5 # type=float, default=0.5, help="maximum norm of gradient (default: 0.5)")
   clip_eps: 0.1 # type=float, default=0.2, help="clipping epsilon for PPO (default: 0.2)")
   epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
-  batch_size: 1024 # type=int, default=256, help="batch size for PPO (default: 256)")
+  batch_size: 512 # type=int, default=256, help="(default: 256)") gets divided by recurrence
   recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
   min_mem: &min_mem 0  # If min number of recurrence to use mem
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
@@ -44,12 +46,26 @@ agent:
   ext_coeff: 2.
   running_norm_obs: false
 
-  recurrence_worlds: 4
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
   env_world_prev_act: true
   connect_worlds: &connect_worlds false
-  play_heuristic: 1 # 0 play with policy - 1 random - 2 with exploration heuristic
+  play_heuristic: 0 # 0 play with policy - 1 random - 2 with exploration heuristic
   pre_fill_memories: true
+
+  recurrence_worlds: 4
+  max_pred_gap: 1 #3 #5
+  pred_gap_factor: 1
+
+  norm_iR_rnd_style: false
+  train_ap_cross_e_gap: true
+  train_distance_triplets: 0
+  distance_margin: 1.
+  pred_state_rnn_mode: false
+  intrinsic_norm_action: false
+  intrinsic_norm_gap: false
+  action_pred_factor: false
+  intrinsic_gaps: [1] #[1, 2, 3] #[1, 2, 3]
+  save_experience_batch: 0
 
 model:
   name: WorldsModels
@@ -60,6 +76,10 @@ model:
   use_memory: true
   connect_worlds: *connect_worlds
 
-extra_logs: [[envworld_loss, ewL, 6f], [evaluator_loss, EL, 6f],
-             [agworld_loss, awL, 6f]
+extra_logs: [
+
+             #[train_distance_triplets, aDL, 6f],
+             [agworld_loss_same, aPsL, 6f], [agworld_loss_diff, aPdL, 6f],
+             [agstate_ap_loss, aPL, 6f],
+             [agstate_sp_loss, sPL, 6f],
              ]

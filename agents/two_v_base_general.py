@@ -326,6 +326,7 @@ class TwoValueHeadsBaseGeneral(ABC):
             return logs
 
         for ep_info in self._ep_statistics:
+            print("Finished ep")
             ep_info = ep_info['interactions']
 
             # count the number of interactions with doors

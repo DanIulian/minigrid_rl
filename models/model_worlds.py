@@ -439,6 +439,7 @@ class AgentState(nn.Module):
         return x
 
     def predict_state(self, x, action_next):
+        action_next = torch.zeros_like(action_next)
         x = torch.cat([x, action_next], dim=1)
 
         x = self.fc_predict_state(x)
