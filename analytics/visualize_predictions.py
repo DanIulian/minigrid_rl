@@ -375,6 +375,71 @@ def play_experience(file_path: str, env_id: int = 0, build_website: bool = True,
         i += 1
 
 
+def export_full_exp_img(file_path):
+    import torchvision
+
+    data = torch.load(file_path)
+    data = data.__dict__
+
+    columns = list(data.keys())
+
+    for column in columns:
+        if isinstance(data[column], torch.Tensor):
+            data[column] = data[column].to("cpu")
+
+    kobs = "obs_image"
+    kintrin_post = "dst_intrinsic_r_post"
+    kaction = "action"
+
+    steps = len(data[kobs])
+    no_envs = len(data[kobs][0])
+    max_df = steps
+
+    data[kobs] = (data[kobs] * 15).numpy().transpose(0, 1, 3, 4, 2).astype(np.uint8)
+    norm_ir = data[kintrin_post].clone()
+    norm_ir -= norm_ir.min()
+    norm_ir = (norm_ir / norm_ir.max() * 255).type(torch.uint8).numpy()
+
+    actions = data[kaction]
+
+    state_size = data[kobs][0][0].shape[:2]
+    state_decoder = StateDecoder(state_size)
+
+    obs_shape = data[kobs].shape[:2]
+
+    obss = []
+    padding = 10
+    empty_obs = None
+    for f in range(obs_shape[0]):
+        p_obs = []
+        for p in range(obs_shape[1]):
+            act = actions[f, p].item()
+            obs_view = view_full_state(f"f{f}p{p}a{act}", data[kobs][f, p],
+                                       state_decoder=state_decoder,
+                                       full_state=False, show=False, put_name=True)
+            if empty_obs is None:
+                empty_obs = np.zeros((obs_view.shape[0] + padding * 2,
+                                      obs_view.shape[1] + padding * 2, 3),
+                                     dtype=np.uint8)
+
+            # Surround with
+            frame = empty_obs.copy()
+            frame[:, :, 2] = norm_ir[f, p]
+
+            frame[padding:-padding, padding:-padding] = obs_view
+            p_obs.append(frame)
+
+        p_obs = np.vstack(p_obs)
+        obss.append(p_obs)
+
+    obss = np.hstack(obss)
+
+    cv2.imwrite(f"{file_path}.png", obss)
+
+    # ----------------------------------------------------------------------------------------------
+    # Config state decoder
+
+
 def main(file_path, env_id=0):
 
     data = np.load(file_path).item()
@@ -430,6 +495,14 @@ def main(file_path, env_id=0):
             i -= 2
 
         i += 1
+
+
+def export_all_experiences_as_img(exp_path):
+    import glob
+
+    f_exps = [f for f in glob.glob(f"{exp_path}/f_*") if "." not in f]
+    for exp in f_exps:
+        export_full_exp_img(exp)
 
 
 if __name__ == "__main__":
