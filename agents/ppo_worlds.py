@@ -116,6 +116,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 0)
         self.action_pred_factor = getattr(cfg, "action_pred_factor", False)
         self.norm_iR_rnd_style = getattr(cfg, "norm_iR_rnd_style", False)
+        self.predict_state_bck = getattr(cfg, "predict_state_bck", True)
 
         gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
         gap_prob = torch.ones(max_pred_gap)
@@ -609,6 +610,10 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             actions_onehot = torch.stack([f.actions_onehot[inds + i] for i in range(no_steps)])
             masks = torch.stack([f.mask[inds + i] for i in range(no_steps+1)]).squeeze(2).type(
                 torch.cuda.ByteTensor)
+            if self.predict_state_bck:
+                target_state = agworld_mems
+            else:
+                target_state = [f.agstate_mems[inds + i] for i in range(no_steps)]
 
             for i in range(no_steps - gap_size):
                 obs = f.obs_image[inds + i]
@@ -643,7 +648,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                     pred_state = agstate_network.predict_state(agstate_mem, f.actions_onehot[inds + i])
                     ags_sp_batch_loss += loss_m_agstate_p(pred_state[next_mask],
-                                                             agworld_mems[i + gap_size][next_mask])
+                                                          target_state[i + gap_size][next_mask])
 
                 else:
                     action_hist = actions_onehot[i: i+gap_size].sum(dim=0)
@@ -696,12 +701,12 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                             pred_state = agstate_network.predict_state(new_agstate_mem, empty_hist)
                             ags_sp_batch_loss += loss_m_agstate_p(pred_state,
-                                                                     agworld_mems[i + gap_size][mask])
+                                                                  target_state[i + gap_size][mask])
 
                         else:
                             pred_state = agstate_network.predict_state(agstate_mem, action_hist)
                             ags_sp_batch_loss += loss_m_agstate_p(pred_state[mask],
-                                                                     agworld_mems[i + gap_size][mask])
+                                                                  target_state[i + gap_size][mask])
                             # agstate_p_batch_loss += loss_m_agstate_p(pred_state[mask],
                             #                                          f.agstate_mems[inds + i + gap_size][
                             #                                              mask].detach())
@@ -1313,6 +1318,11 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         dst_intrinsic_r.zero_()
         # dst_intrinsic_ra = torch.zeros_like(dst_intrinsic_r)
 
+        if self.predict_state_bck:
+            target_state = agworld_mems
+        else:
+            target_state = agstate_mems
+
         with torch.no_grad():
             dst_intrinsic_r_t = torch.zeros_like(dst_intrinsic_r)
             dst_intrinsic_r_a = torch.zeros_like(dst_intrinsic_r)
@@ -1361,7 +1371,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     else:
                         pred_state = agstate_network.predict_state(agstate_mems[i], action_hist)
 
-                    diff_pred = (pred_state - agworld_mems[i + gap_size]).pow_(2)
+                    diff_pred = (pred_state - target_state[i + gap_size]).pow_(2)
                     diff_pred = diff_pred.detach().mean(1)
                     # diff_pred.mul_(mask2.float())  # Zero prediction for fwd mask
 
@@ -1431,7 +1441,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
                     # mean, std, mmax = get_stats(dst_intrinsic_r_t)
                     # print(f"Gap {gap_size} SP ysM: {mean:.6f} {std:.6f} {mmax:.6f}")
-
 
                 dst_intrinsic_r.add_(dst_intrinsic_r_t)
 

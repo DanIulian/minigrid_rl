@@ -375,7 +375,7 @@ def play_experience(file_path: str, env_id: int = 0, build_website: bool = True,
         i += 1
 
 
-def export_full_exp_img(file_path):
+def export_full_exp_img(file_path, pre_ir=True):
     import torchvision
 
     data = torch.load(file_path)
@@ -389,6 +389,8 @@ def export_full_exp_img(file_path):
 
     kobs = "obs_image"
     kintrin_post = "dst_intrinsic_r_post"
+    if pre_ir:
+        kintrin_post = "dst_intrinsic_r_pre"
     kaction = "action"
 
     steps = len(data[kobs])
@@ -434,7 +436,7 @@ def export_full_exp_img(file_path):
 
     obss = np.hstack(obss)
 
-    cv2.imwrite(f"{file_path}.png", obss)
+    cv2.imwrite(f"{file_path}_p{int(pre_ir)}.png", obss)
 
     # ----------------------------------------------------------------------------------------------
     # Config state decoder
@@ -502,7 +504,7 @@ def export_all_experiences_as_img(exp_path):
 
     f_exps = [f for f in glob.glob(f"{exp_path}/f_*") if "." not in f]
     for exp in f_exps:
-        export_full_exp_img(exp)
+        export_full_exp_img(exp, pre_ir=False)
 
 
 if __name__ == "__main__":
