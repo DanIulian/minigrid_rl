@@ -536,21 +536,23 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             new_agworld_emb = [None] * recurrence_worlds
             new_agworld_mem = [None] * recurrence_worlds
 
-            state_batch_loss = 0
-            state_batch_loss_same = 0
-            state_batch_loss_diffs = 0
+            state_batch_loss = torch.zeros(1, device=self.device)[0]
 
-            act_batch_loss = 0
-            act_batch_loss_same = 0
-            act_batch_loss_diff = 0
-            evaluator_batch_loss = 0
-            evaluator_base_batch_loss = 0
+            state_batch_loss_same = torch.zeros(1, device=self.device)[0]
+            state_batch_loss_diffs = torch.zeros(1, device=self.device)[0]
+
+            act_batch_loss = torch.zeros(1, device=self.device)[0]
+            act_batch_loss_same = torch.zeros(1, device=self.device)[0]
+            act_batch_loss_diff = torch.zeros(1, device=self.device)[0]
+            evaluator_batch_loss = torch.zeros(1, device=self.device)[0]
+            evaluator_base_batch_loss = torch.zeros(1, device=self.device)[0]
 
             log_grad_agworld_norm = []
             log_grad_eval_norm = []
 
             # -- Agent world
             for i in range(recurrence_worlds):
+
                 obs = f.obs_image[inds + i].detach()
                 mask = f.mask[inds + i]
                 prev_actions_one = f.actions_onehot[inds + i - 1].detach()
@@ -563,14 +565,16 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
                 # Compute loss for evaluator using cross entropy loss
                 pred_pos = evaluator_network(new_agworld_mem[i].detach())
-                target_pos = (self.env_width * pos[:, 0] + pos[:, 1]).type(torch.long)
+                target_pos = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
+
                 evaluator_batch_loss += loss_m_eval(pred_pos, target_pos)
 
                 # Compute loss for a random input using cross entropy to obtain a base
                 # for evaluator
+
                 random_input = torch.rand_like(new_agworld_mem[i].detach())
                 pred_pos_base = base_eval_network(random_input)
-                target_pos_base = (self.env_width * pos[:, 0] + pos[:, 1]).type(torch.long)
+                target_pos_base = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
                 evaluator_base_batch_loss += loss_m_eval_base(pred_pos_base, target_pos_base)
 
 
@@ -660,6 +664,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             torch.nn.utils.clip_grad_norm_(base_eval_network.parameters(), max_grad_norm)
 
             #log some shit
+
             log_act_loss.append(act_batch_loss.item())
             log_state_loss.append(state_batch_loss.item())
             log_evaluator_loss.append(evaluator_batch_loss.item())
@@ -738,11 +743,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         crt_actions = torch.zeros((len(obs), env.action_space.n), device=device)
         pred_act = torch.zeros((len(obs), env.action_space.n), device=device)
 
-        new_agworld_emb = None
         prev_agworld_mem = None
         obs_batch = None
-
-        loss_m_nstate = torch.nn.MSELoss()
 
         transitions = []
         steps = 200
@@ -754,9 +756,13 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             obs_batch = torch.transpose(torch.transpose(preprocessed_obs.image, 1, 3), 2, 3)
 
             pos_batch = preprocess_images(
-                [obs[i]['position'] for i in  range(len(obs))],
+                [obs[i]['position'] for i in range(len(obs))],
                 device=device,
                 normalize=False
+            )
+            full_state_batch = preprocess_images(
+                [obs[i]['state'] for i in range(len(obs))],
+                device=device,
             )
 
             with torch.no_grad():
@@ -793,7 +799,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             transitions.append((obs, action.cpu(), reward, done, next_obs, dist.probs.cpu(),
                                 pos_batch.cpu(), pred_state.cpu(),  pred_position.cpu(),
                                 eval_ag_memory.cpu(), new_agworld_emb.cpu(), pred_act.cpu(),
-                                obs_batch.cpu()))
+                                obs_batch.cpu(), full_state_batch.cpu()))
             obs = next_obs
 
         if out_dir is not None:
@@ -801,7 +807,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                     {"transitions": transitions,
                      "columns": ["obs", "action", "reward", "done", "next_obs", "probs",
                                  "pos_batch", "pred_emb_state", "pos_predict","eval_ag_memory",
-                                 "new_agworld_emb", "pred_act", "obs_batch"]})
+                                 "new_agworld_emb", "pred_act", "obs_batch", "full_state_batch"]})
 
         self.acmodel.train()
 
