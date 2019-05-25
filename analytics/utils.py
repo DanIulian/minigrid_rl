@@ -44,7 +44,12 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
         data[run_index]["run_id"] = run_id
 
         #cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
-        cfg_df = pd.DataFrame(nested_to_record(config_data))
+        nested_record = nested_to_record(config_data)
+        for k, v in nested_record.items():
+            if isinstance(v, list):
+                nested_record[k] = [v]
+
+        cfg_df = pd.DataFrame.from_dict(nested_record)
         cfg_df["run_name"] = run_name
         cfg_df["run_index"] = run_index
         cfg_dfs.append(cfg_df)
