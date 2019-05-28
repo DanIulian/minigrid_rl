@@ -15,6 +15,9 @@ import re
 # -- Load experiment Data
 
 
+experiment_path = "results/2019Apr10-202258_multiple_envs_icm/"
+data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+
 def extract_name(s):
     s = re.sub("_env[^/]*/", "", s)
     s = re.sub("^\d*[^_]*_", "", s)

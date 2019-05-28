@@ -388,7 +388,7 @@ def export_full_exp_img(file_path, pre_ir=True):
             data[column] = data[column].to("cpu")
 
     kobs = "obs_image"
-    kintrin_post = "dst_intrinsic_r_post"
+    kintrin_post = "dst_intrinsic"
     if pre_ir:
         kintrin_post = "dst_intrinsic_r_pre"
     kaction = "action"
@@ -400,7 +400,10 @@ def export_full_exp_img(file_path, pre_ir=True):
     data[kobs] = (data[kobs] * 15).numpy().transpose(0, 1, 3, 4, 2).astype(np.uint8)
     norm_ir = data[kintrin_post].clone()
     norm_ir -= norm_ir.min()
-    norm_ir = (norm_ir / norm_ir.max() * 255).type(torch.uint8).numpy()
+    norm_ir = (
+            (
+                    (norm_ir - norm_ir.min()) / (norm_ir.max() - norm_ir.min())
+            ) * 255).type(torch.uint8).numpy()
 
     actions = data[kaction]
 
@@ -443,10 +446,16 @@ def export_full_exp_img(file_path, pre_ir=True):
 
 
 def main(file_path, env_id=0):
-
     data = np.load(file_path).item()
     columns = data["columns"]
     transitions = data["transitions"]
+
+    # ----------------------------------------------------------------------
+    # TODO Fix dan
+    columns = ["obs", "action", "reward", "done", "next_obs", "probs",
+     "pos_batch", "pred_emb_state", "pos_predict", "eval_ag_memory",
+     "new_agworld_emb", "pred_act", "obs_batch", "full_state_batch"]
+    # ----------------------------------------------------------------------
 
     df = pd.DataFrame(transitions, columns=columns)
 
@@ -464,25 +473,25 @@ def main(file_path, env_id=0):
         state = np.array(df.iloc[i]["obs"][env_id]["state"])
         obs = np.array(df.iloc[i]["obs"][env_id]["image"])
 
-        pred = df.iloc[i]["pred_full_state"][env_id]
+        # pred = df.iloc[i]["pred_full_state"][env_id]
         obs_batch = df.iloc[i]["obs_batch"][env_id]
 
-        pred_state = (pred * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
+        # pred_state = (pred * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
         obs_batch = (obs_batch * 15).numpy().transpose(1, 2, 0).astype(np.uint8)
 
         view_full_state("Full state", state, state_decoder=state_decoder, full_state=True)
-        view_full_state("Pred state", pred_state, state_decoder=state_decoder, full_state=True)
+        # view_full_state("Pred state", pred_state, state_decoder=state_decoder, full_state=True)
 
         next_obs = np.array(df.iloc[i]["next_obs"][env_id]["image"])
-        pred_diff = (df.iloc[i]["obs_predict"][env_id].numpy().transpose(1, 2, 0))
-        pred_obs = pred_diff + obs.astype(np.float) / 15.
-        pred_obs = pred_obs * 15
-        pred_obs = pred_obs.astype(np.uint8)
+        # pred_diff = (df.iloc[i]["obs_predict"][env_id].numpy().transpose(1, 2, 0))
+        # pred_obs = pred_diff + obs.astype(np.float) / 15.
+        # pred_obs = pred_obs * 15
+        # pred_obs = pred_obs.astype(np.uint8)
 
         view_full_state("obs", obs, state_decoder=state_decoder, full_state=False)
         view_full_state("Next obs", next_obs, state_decoder=state_decoder, full_state=False)
-        view_full_state("pred_diff", pred_diff)
-        view_full_state("pred_obs", pred_obs, state_decoder=state_decoder, full_state=False)
+        # view_full_state("pred_diff", pred_diff)
+        # view_full_state("pred_obs", pred_obs, state_decoder=state_decoder, full_state=False)
 
         if i < max_df:
             action = df.iloc[i]['action'][env_id].item()
@@ -501,7 +510,6 @@ def main(file_path, env_id=0):
 
 def export_all_experiences_as_img(exp_path):
     import glob
-
     f_exps = [f for f in glob.glob(f"{exp_path}/f_*") if "." not in f]
     for exp in f_exps:
         export_full_exp_img(exp, pre_ir=False)
@@ -517,6 +525,8 @@ if __name__ == "__main__":
     parser.add_argument('--website', action='store_false', default=True)
     args = parser.parse_args()
 
+    export_all_experiences_as_img(args.path)
+    import pdb; pdb.set_trace()
     if args.exp:
         play_experience(args.path, args.env_id, build_website=args.website)
     else:

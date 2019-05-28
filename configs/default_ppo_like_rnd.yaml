@@ -19,7 +19,7 @@ env_cfg:
   normalize: true
 
 agent:
-  name: PPO
+  name: PPORND
   frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update (default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   optimizer: RMSprop
@@ -41,7 +41,7 @@ agent:
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
 model:
-  name: Model
+  name: RNDModel
   recurrence: *recurrence
   text: *text
   memory_type: GRU

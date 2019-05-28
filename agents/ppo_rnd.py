@@ -15,7 +15,7 @@ class PPORND(TwoValueHeadsBase):
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
-        num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
+        num_frames_per_proc = getattr(cfg, "frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
         entropy_coef = getattr(cfg, "entropy_coef", 0.01)
@@ -34,7 +34,7 @@ class PPORND(TwoValueHeadsBase):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
-        self.running_norm_obs = getattr(cfg, "running_norm_obs", True)
+        self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
 
         self.nminibatches = getattr(cfg, "nminibatches", 4)
 
@@ -358,7 +358,7 @@ class PPORND(TwoValueHeadsBase):
         dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
 
         # Normalize intrinsic reward
-        # self.predictor_rff.reset() # do you have to rest it every time ???
+        self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
 
         for i in reversed(range(self.num_frames_per_proc)):

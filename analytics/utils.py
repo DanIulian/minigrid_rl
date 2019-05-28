@@ -6,7 +6,7 @@ import yaml
 import natsort
 
 
-def get_experiment_files(experiment_path: str, files: dict= {}):
+def get_experiment_files(experiment_path: str, files: dict= {}, flag=False):
 
     # Assumes each directory (/ experiment run) has a unique cfg
     cfg_files = glob.glob(f"{experiment_path}/**/cfg.yaml", recursive=True)
@@ -43,13 +43,13 @@ def get_experiment_files(experiment_path: str, files: dict= {}):
         data[run_index]["experiment_id"] = experiment_id
         data[run_index]["run_id"] = run_id
 
-        #cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
-        nested_record = nested_to_record(config_data)
-        for k, v in nested_record.items():
-            if isinstance(v, list):
-                nested_record[k] = [v]
 
-        cfg_df = pd.DataFrame.from_dict(nested_record)
+        if flag:
+            cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
+
+        else:
+            cfg_df = pd.DataFrame(nested_to_record(config_data))
+
         cfg_df["run_name"] = run_name
         cfg_df["run_index"] = run_index
         cfg_dfs.append(cfg_df)

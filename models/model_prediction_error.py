@@ -1,26 +1,23 @@
-# AndreiN, 2019
+# DanM, 2019
 # parts from https://github.com/lcswillems/torch-rl
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import torch_rl
-
-
 from models.utils import initialize_parameters
 
 
-class RNDModels(nn.Module, torch_rl.RecurrentACModel):
+class PEModel(nn.Module, torch_rl.RecurrentACModel):
     def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
         super().__init__()
 
-        self.policy_model = RNDPredModel(cfg, obs_space, action_space, use_memory=use_memory,
-                                         use_text=use_text)
+        self.policy_model = WorldsPolicyModel(cfg, obs_space, action_space, use_memory=use_memory,
+                                              use_text=use_text)
 
-        self.predictor_network = PredictionNetwork(cfg, obs_space, action_space)
-
-        self.random_target = RandomNetwork(cfg, obs_space, action_space)
+        self.curiosity_model = CuriosityModel(cfg, obs_space, action_space)
 
         self.memory_type = self.policy_model.memory_type
         self.use_text = self.policy_model.use_text
@@ -34,7 +31,7 @@ class RNDModels(nn.Module, torch_rl.RecurrentACModel):
         return self.policy_model(*args, **kwargs)
 
 
-class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
+class WorldsPolicyModel(nn.Module, torch_rl.RecurrentACModel):
     def __init__(self, cfg, obs_space, action_space, use_memory=False, use_text=False):
         super().__init__()
 
@@ -48,16 +45,6 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
         self.use_memory = use_memory
 
         # Define image embedding
-        #self.image_conv = nn.Sequential(
-        #    nn.Conv2d(3, 16, (2, 2)),
-        #    nn.ReLU(),
-        #    nn.Conv2d(16, 32, (2, 2)),
-        #    nn.ReLU(),
-        #    nn.Conv2d(32, 64, (2, 2)),
-        #    nn.ReLU()
-        #)
-
-        #experiments used model
         self.image_conv = nn.Sequential(
             nn.Conv2d(3, 16, (3, 3)),
             nn.BatchNorm2d(16),
@@ -71,9 +58,7 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
         )
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-
-        #self.image_embedding_size = ((n-1)-2)*((m-1)-2)*64
-        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
+        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2)*64
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
@@ -103,12 +88,12 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.fc2_val = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         self.fc2_act = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         # Define heads
@@ -167,102 +152,106 @@ class RNDPredModel(nn.Module, torch_rl.RecurrentACModel):
         return hidden[-1]
 
 
-class PredictionNetwork(nn.Module):
+class CuriosityModel(nn.Module):
     def __init__(self, cfg, obs_space, action_space):
-        super(PredictionNetwork, self).__init__()
+        super(CuriosityModel, self).__init__()
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        hidden_size = getattr(cfg, "hidden_size", 256)
 
-        #self.image_conv = nn.Sequential(
-        #    nn.Conv2d(3, 16, (2, 2)),
-        #    nn.LeakyReLU(),
-        #    nn.Conv2d(16, 32, (2, 2)),
-        #    nn.LeakyReLU(),
-        #    nn.Conv2d(32, 64, (2, 2)),
-        #    nn.LeakyReLU()
-        #)
+        self.obs_channel1 = [11, 7, 7]
+        self.obs_channel2 = [6, 7, 7]
+        self.obs_channel3 = [3, 7, 7]
+
+
+        hidden_size = getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 256)
+        channels = 3
+        self.action_space = torch.Size((action_space.n, ))
+
+        out_size = n * m * channels
 
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (3, 3)),
+            nn.Conv2d(channels, 16, (3, 3)),
             nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Conv2d(16, 32, (2, 2)),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.Conv2d(32, 64, (2, 2)),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(inplace=True),
         )
 
         image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
 
+        # Consider embedding out of fc1
         self.fc1 = nn.Sequential(
             nn.Linear(image_embedding_size, hidden_size),
-            nn.ReLU(inplace=True),
-        )
-        self.fc2 = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(inplace=True),
-        )
-        self.fc3 = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            #nn.ReLU(),
         )
 
-    def forward(self, x):
-        b_size = x.size(0)
+        self.memory_rnn = nn.GRUCell(hidden_size + action_space.n, memory_size)
+
+        # Next state prediction
+        self._embedding_size = embedding_size = hidden_size  # memory_size
+
+        self.pe = nn.Sequential(
+            nn.Linear(memory_size + action_space.n, memory_size),
+            nn.ReLU(inplace=True),
+        )
+
+        self.next_obs1 = nn.Sequential(
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, np.prod(self.obs_channel1)),
+        )
+
+        self.next_obs2 = nn.Sequential(
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, np.prod(self.obs_channel2)),
+        )
+
+        self.next_obs3 = nn.Sequential(
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, np.prod(self.obs_channel3)),
+        )
+
+
+    @property
+    def memory_size(self):
+        return self._memory_size
+
+    @property
+    def embedding_size(self):
+        return self._embedding_size
+
+    def forward(self, x, memory, action_prev):
+        b_size = x.size()
 
         x = self.image_conv(x)
-        x = x.view(b_size, -1)
+        x = x.view(b_size[0], -1)
 
-        x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.fc3(x)
-        return x
+        x = local_embedding = self.fc1(x)
 
+        local_embedding = nn.ReLU()(local_embedding)
 
-class RandomNetwork(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(RandomNetwork, self).__init__()
-        n = obs_space["image"][0]
-        m = obs_space["image"][1]
-        hidden_size = getattr(cfg, "hidden_size", 256)
+        x = torch.cat([x, action_prev], dim=1)
 
-        #self.image_conv = nn.Sequential(
-        #    nn.Conv2d(3, 16, (2, 2)),
-        #    nn.LeakyReLU(),
-        #    nn.Conv2d(16, 32, (2, 2)),
-        #    nn.LeakyReLU(),
-        #    nn.Conv2d(32, 64, (2, 2)),
-        #    nn.LeakyReLU()
-        #)
+        x = memory = self.memory_rnn(x, memory)
 
-        self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (3, 3)),
-            #nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, (2, 2)),
-            #nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, (2, 2)),
-            #nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
+        return None, memory, local_embedding
 
-        image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
+    def forward_state(self, embedding, action_next):
+        x = torch.cat([embedding, action_next], dim=1)
 
-        #image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+        next_obs1 = self.next_obs1(self.pe(x))
+        next_obs2 = self.next_obs2(self.pe(x))
+        next_obs3 = self.next_obs3(self.pe(x))
 
-        self.fc1 = nn.Sequential(
-            nn.Linear(image_embedding_size, hidden_size),
-            #nn.ReLU(),
-        )
+        next_obs1 = next_obs1.view(x.size()[0], self.obs_channel1[0], self.obs_channel1[1], self.obs_channel1[2])
+        next_obs2 = next_obs2.view(x.size()[0], self.obs_channel2[0], self.obs_channel2[1], self.obs_channel2[2])
+        next_obs3 = next_obs3.view(x.size()[0], self.obs_channel3[0], self.obs_channel3[1], self.obs_channel3[2])
 
-    def forward(self, x):
-        b_size = x.size(0)
-        x = self.image_conv(x)
-        x = x.view(b_size, -1)
+        return next_obs1, next_obs2, next_obs3
 
-        x = self.fc1(x)
-        return x

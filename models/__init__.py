@@ -3,6 +3,8 @@ from . import model_replica
 from . import model_worlds
 from . import model_worlds_separate
 from . import model_icm_like
+from . import model_self_play
+from . import model_prediction_error
 
 MODELS = {
     "RNDModel": model_rnd_like.RNDModels,
@@ -10,6 +12,8 @@ MODELS = {
     "WorldsModels": model_worlds.WorldsModels,
     "WorldsModelsSeparate": model_worlds_separate.WorldsModels,
     "ICMModel": model_icm_like.ICMModel,
+    "SPModel": model_self_play,
+    "PEModel": model_prediction_error.PEModel,
 }
 
 

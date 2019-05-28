@@ -14,7 +14,7 @@ class PPO(BaseAlgov2):
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
-        num_frames_per_proc = getattr(cfg, "num_frames_per_proc", 128)
+        num_frames_per_proc = getattr(cfg, "frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
         entropy_coef = getattr(cfg, "entropy_coef", 0.01)

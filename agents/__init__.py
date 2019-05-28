@@ -3,6 +3,8 @@ from . import ppo_replica
 from . import ppo_worlds
 from . import ppo_worlds_separate
 from . import ppo_icm
+from . import ppo_icm_experimental
+from . import ppo_prediction_error
 
 AGENTS = {
     "PPORND": ppo_rnd.PPORND,
@@ -10,6 +12,8 @@ AGENTS = {
     "PPOWorlds": ppo_worlds.PPOWorlds,
     "PPOWorldsSeparate": ppo_worlds_separate.PPOWorlds,
     "PPOIcm": ppo_icm.PPOIcm,
+    "PPOIcmExp": ppo_icm_experimental.PPOIcm,
+    "PPOPE": ppo_prediction_error.PPOPE
 
 }
 

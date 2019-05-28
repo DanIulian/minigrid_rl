@@ -25,17 +25,34 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         self.use_memory = use_memory
 
         # Define image embedding
+        #self.image_conv = nn.Sequential(
+        #    nn.Conv2d(3, 16, (2, 2)),
+        #    nn.ReLU(),
+        #    nn.Conv2d(16, 32, (2, 2)),
+        #    nn.ReLU(),
+        #    nn.Conv2d(32, 64, (2, 2)),
+        #    nn.ReLU()
+        #)
+
+        # experiment used model
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (2, 2)),
-            nn.ReLU(),
+            nn.Conv2d(3, 16, (3, 3)),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
             nn.Conv2d(16, 32, (2, 2)),
-            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, (2, 2)),
-            nn.ReLU()
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
         )
+
+
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        self.image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
+
+        #self.image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
