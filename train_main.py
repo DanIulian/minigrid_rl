@@ -6,7 +6,7 @@ import time
 import datetime
 import torch
 import sys
-from liftoff.config import read_config
+# from liftoff.config import read_config
 from argparse import Namespace
 import numpy as np
 from typing import List
@@ -350,4 +350,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from liftoff import parse_opts
+    run(parse_opts())
