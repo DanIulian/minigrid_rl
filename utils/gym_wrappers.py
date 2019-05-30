@@ -1,5 +1,5 @@
-#Dan Muntean 2019
-#script for computing agent's beaviour during learning
+# Dan Muntean 2019
+# script for computing agent's beaviour during learning
 
 import gym
 import numpy as np
@@ -10,6 +10,7 @@ import time
 import math
 import collections
 from gym_minigrid.minigrid import OBJECT_TO_IDX
+import cv2
 
 try:
     import gym_minigrid
@@ -35,6 +36,10 @@ def include_position(env):
 
 def get_interactions(env):
     return GetImportantInteractions(env)
+
+
+def occupancy_stats(env):
+    return OccupancyMap(env)
 
 
 class RecordingBehaviour(Wrapper):
@@ -138,6 +143,188 @@ class RecordFullState(Wrapper):
         self.unwrapped.seed(seed=seed)
 
 
+class UniqueStates(gym.core.Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.counts = {}
+
+    def step(self, action):
+
+        obs, reward, done, info = self.env.step(action)
+
+        env = self.unwrapped
+        tup = (env.agentPos, env.agentDir, env.carrying.type, env.carrying.color)
+
+        # Get the count for this (s,a) pair
+        if tup in self.counts:
+            self.counts[tup] += 1
+        else:
+            self.counts[tup] += 1
+
+        return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        self.counts = {}
+        return self.env.reset(**kwargs)
+
+
+def rotate_img(img, cw=True):
+    if cw:
+        # rotate cw
+        out = cv2.transpose(img)
+        out = cv2.flip(out, flipCode=1)
+    else:
+        # rotate ccw
+        out = cv2.transpose(img)
+        out = cv2.flip(out, flipCode=0)
+    return out
+
+
+class OccupancyMap(Wrapper):
+    """ Builds discovery map """
+    def __init__(self, env):
+        super(OccupancyMap, self).__init__(env)
+
+        env_name = env.spec.id
+        self.actions = self.env.unwrapped.actions
+        self.step_count = self.env.unwrapped.step_count
+        self.counts = {}
+
+        if "MultiRoom" in env_name:
+            self.get_occupancy = self.get_irregular_map
+        elif "ObstructedMaze-2D" in env_name or "ObstructedMaze-1Q" in env_name:
+            self.get_occupancy = self.get_obstructedmaze_3room
+        elif "ObstructedMaze-2Q" in env_name:
+            self.get_occupancy = self.get_obstructedmaze_6room
+        else:
+            self.get_occupancy = self.get_full_occupancy
+
+        self.occupancy = None
+        self.seen = None
+
+    def step(self, action):
+        env = self.unwrapped
+        observation, reward, done, info = self.env.step(action)
+
+        # Count unique states
+        if not env.carrying:
+            carrying_type = None
+            carrying_color = None
+        else:
+            carrying_type = env.carrying.type
+            carrying_color = env.carrying.color
+
+        tup = (tuple(env.agent_pos), env.agent_dir, carrying_type, carrying_color)
+
+        if tup in self.counts:
+            self.counts[tup] += 1
+        else:
+            self.counts[tup] = 1
+
+        # Add discovery map
+        self.add_view(observation["image"])
+
+        if done:
+            possible = self.occupancy.sum()
+            seen = ((self.occupancy * self.seen) > 0).sum()
+            values = np.array(list(self.counts.values()))
+            info['occupancy'] = {
+                "possible": possible,
+                "seen": seen,
+                "discovered": seen/possible,
+                "unique_states": len(self.counts.keys()),
+                "same_state_max": values.max(),
+                "same_state_mean": values.mean(),
+                "same_state_std": values.std(),
+            }
+
+        return observation, reward, done, info
+
+    def add_view(self, view):
+        topX, topY, botX, botY = self.env.unwrapped.get_view_exts()
+        maxX, maxY = self.occupancy.shape
+        agent_dir = self.env.unwrapped.agent_dir
+        grid = self.env.unwrapped.grid.encode()[:,:,0]
+        view = view[:, :, 0]
+
+        # Rotate grid to map view
+        if agent_dir == 0:
+            view = rotate_img(view, cw=False)
+        elif agent_dir == 1:
+            view = rotate_img(view, cw=True)
+            view = rotate_img(view, cw=True)
+        elif agent_dir == 2:
+            view = rotate_img(view, cw=True)
+
+        # Select only visible grid
+        d1, d2 = maxX-botX, maxY-botY
+        maxX = maxX+1 if d1 >= 0 else d1
+        maxY = maxY+1 if d2 >= 0 else d2
+        visible_view = view[min(topX, 0)*-1: maxX, min(topY, 0)*-1: maxY]
+        visible_grid = grid[max(topX,0):botX, max(topY,0):botY]
+
+        self.seen[max(topX, 0):botX, max(topY, 0):botY] += (visible_grid == visible_view)
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.occupancy = self.get_occupancy(self.env.unwrapped.grid.encode())
+        self.seen = np.zeros_like(self.occupancy)
+        self.add_view(obs["image"])
+        self.counts = {}
+        return obs
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
+
+    def get_full_occupancy(self, full_grid: np.array) -> np.array:
+        occupancy = np.ones_like(full_grid[:, :, 0])
+        return occupancy
+
+    def get_obstructedmaze_3room(self, full_grid: np.array) -> np.array:
+        room_size = self.env.room_size
+        occupancy = np.zeros_like(full_grid[:, :, 0])
+        occupancy[:, -room_size:] = 1
+        occupancy[room_size-1:room_size*2, room_size-1:] = 1
+        return occupancy
+
+    def get_obstructedmaze_6room(self, full_grid: np.array) -> np.array:
+        room_size = self.env.room_size
+        occupancy = np.zeros_like(full_grid[:, :, 0])
+        occupancy[:, -room_size:] = 1
+        occupancy[room_size-1:room_size*2, room_size-1:] = 1
+        occupancy[-room_size:, :] = 1
+        return occupancy
+
+    @staticmethod
+    def get_irregular_map(full_grid: np.array) -> np.array:
+        """Get occupancy map for non-regular maze"""
+        full_grid = full_grid[:, :, 0]
+
+        walls_idx = np.array(np.where(full_grid == 2)).T
+        occupancy1 = np.zeros_like(full_grid)
+        row = -1
+        min_c = None
+        for i in range(walls_idx.shape[0]):
+            if row != walls_idx[i, 0]:
+                if row > 0:
+                    occupancy1[row, min_c:walls_idx[i - 1, 1]] = 1
+                row, min_c = walls_idx[i]
+
+        walls_idx = np.array(np.where(full_grid.transpose(1, 0) == 2)).T
+        occupancy2 = np.zeros_like(full_grid)
+        cl = -1
+        min_r = None
+        for i in range(walls_idx.shape[0]):
+            if cl != walls_idx[i, 0]:
+                if cl > 0:
+                    occupancy2[min_r:walls_idx[i - 1, 1], cl] = 1
+                cl, min_r = walls_idx[i]
+
+        occupancy = occupancy1 & occupancy2
+        return occupancy
+
+
 def bfs(grid, start, target):
     move = np.array([[+1, 0], [-1, 0], [0, +1], [0, -1]])
     height, width = grid.shape
@@ -183,6 +370,140 @@ class RecordPosition(Wrapper):
         self.env.seed(seed=seed)
 
 
+def get_interactions_stats(ep_statistics):
+
+    # process statistics about the agent's behaviour
+    # in the environment
+    logs = {
+        "ep_completed": len(ep_statistics),
+
+        "doors_opened": 0,
+        "doors_closed": 0,
+        "doors_interactions": 0,
+
+        "keys_picked": 0,
+        "keys_dropped": 0,
+        "keys_interactions": 0,
+
+        "balls_picked": 0,
+        "balls_dropped": 0,
+        "balls_interactions": 0,
+
+        "boxes_picked": 0,
+        "boxes_dropped": 0,
+        "boxes_interactions": 0,
+
+        "objects_interactions": 0,
+        "categories_interactions": 0,
+
+        "possible": 0,
+        "seen": 0,
+        "discovered": 0,
+        "unique_states": 0,
+        "same_state_max": 0,
+        "same_state_mean": 0,
+        "same_state_std": 0,
+    }
+
+    if len(ep_statistics) == 0:
+        return logs
+
+    for ep_info in ep_statistics:
+        if "occupancy" in ep_info:
+            for k, v in ep_info["occupancy"].items():
+                logs[k] += v
+
+        ep_info = ep_info['interactions']
+
+        global no_categories, no_objects, cat_interactions, objects_interactions
+        no_categories = 0.
+        no_objects = 0.
+        cat_interactions = 0.
+        objects_interactions = 0.
+
+        def stats_interactions(objects, interactions):
+            global no_categories, no_objects, cat_interactions, objects_interactions
+            no_categories += (len(objects) > 0)
+            no_objects += len(objects)
+            cat_interactions += (interactions > 0)
+            objects_interactions += interactions
+
+        # count the mean number of interactions with doors
+        doors_interactions, doors_opened, doors_closed = 0., 0., 0.
+        for door in ep_info['doors'].values():
+            doors_opened += door['nr_opened']
+            doors_closed += door['nr_closed']
+            if door['nr_opened'] > 0:
+                doors_interactions += 1
+
+        if len(ep_info['doors']) > 0 and doors_interactions > 0:
+            logs['doors_interactions'] +=\
+                float(doors_interactions) / len(ep_info['doors'])
+            logs['doors_opened'] += doors_opened / doors_interactions
+            logs['doors_closed'] += doors_closed / doors_interactions
+
+        stats_interactions(ep_info['doors'], doors_interactions)
+
+        # count the mean number of interactions with boxes
+        boxes_interactions, boxes_picked, boxes_dropped = 0., 0., 0.
+        for box in ep_info['boxes'].values():
+            boxes_picked += box["nr_picked_up"]
+            boxes_dropped += box["nr_put_down"]
+            if box['nr_picked_up'] > 0:
+                boxes_interactions += 1
+
+        if len(ep_info['boxes']) > 0 and boxes_interactions > 0:
+            logs['boxes_interactions'] +=\
+                float(boxes_interactions) / len(ep_info['boxes'])
+            logs['boxes_picked'] += boxes_picked / boxes_interactions
+            logs['boxes_dropped'] += boxes_dropped / boxes_interactions
+
+        stats_interactions(ep_info['boxes'], boxes_interactions)
+
+        # count the mean number of interactions with balls
+        balls_interactions, balls_picked, balls_dropped = 0., 0., 0.
+        for ball in ep_info['balls'].values():
+            balls_picked += ball["nr_picked_up"]
+            balls_dropped += ball["nr_put_down"]
+            if ball['nr_picked_up'] > 0:
+                balls_interactions += 1
+
+        if len(ep_info['balls']) > 0 and balls_interactions > 0:
+            logs['balls_interactions'] +=\
+                float(balls_interactions) / len(ep_info['balls'])
+            logs['balls_picked'] += balls_picked / balls_interactions
+            logs['balls_dropped'] += balls_dropped / balls_interactions
+
+        stats_interactions(ep_info['balls'], balls_interactions)
+
+        # count the mean number of interactions with keys
+        keys_interactions, keys_picked, keys_dropped = 0., 0., 0.
+        for key in ep_info['keys'].values():
+            keys_picked += key["nr_picked_up"]
+            keys_dropped += key["nr_put_down"]
+            if key['nr_picked_up'] > 0:
+                keys_interactions += 1
+
+        if len(ep_info['keys']) > 0 and keys_interactions > 0:
+            logs['keys_interactions'] +=\
+                float(keys_interactions) / len(ep_info['keys'])
+            logs['keys_picked'] += keys_picked / keys_interactions
+            logs['keys_dropped'] += keys_dropped / keys_interactions
+
+        stats_interactions(ep_info['keys'], keys_interactions)
+
+        # Calculate the total number of objects
+        reached_goal = ep_info['reward']
+        logs['objects_interactions'] += (objects_interactions + reached_goal) / (no_objects + 1)
+        logs['categories_interactions'] += (cat_interactions + reached_goal) / (no_categories + 1)
+
+    for log_key in logs:
+        if log_key != 'ep_completed':
+            logs[log_key] /= float(logs['ep_completed'])
+
+    return logs
+
+
 class GetImportantInteractions(Wrapper):
     '''
     Wrapper that saves important interactions with the environment
@@ -192,6 +513,9 @@ class GetImportantInteractions(Wrapper):
 
     def __init__(self, env):
         super(GetImportantInteractions, self).__init__(env)
+
+        self.actions = self.env.unwrapped.actions
+        self.step_count = self.env.unwrapped.step_count
 
         self.grid = None
         self.doors = {}
@@ -214,6 +538,7 @@ class GetImportantInteractions(Wrapper):
                 "keys": deepcopy(self.objects['key']),
                 "boxes": deepcopy(self.objects['box']),
                 "balls": deepcopy(self.objects['ball']),
+                "reward": reward > 0,
             }
 
         return observation, reward, done, info

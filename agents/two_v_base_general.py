@@ -9,13 +9,15 @@ from copy import deepcopy
 
 from torch_rl.format import default_preprocess_obss
 from torch_rl.utils import DictList, ParallelEnv
+from utils.gym_wrappers import get_interactions_stats
 
 
 class TwoValueHeadsBaseGeneral(ABC):
     """The base class for RL algorithms."""
 
     def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
-                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred):
+                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
+                 exp_used_pred, min_stats_ep_batch=16):
         """
         Initializes a `BaseAlgo` instance.
 
@@ -71,6 +73,7 @@ class TwoValueHeadsBaseGeneral(ABC):
         # Initialize episode statistics values
         self._finished_episodes = 0
         self._ep_statistics = []
+        self._min_stats_ep_batch = min_stats_ep_batch
 
         # Store helpers values
 
@@ -147,7 +150,6 @@ class TwoValueHeadsBaseGeneral(ABC):
                     dist, value = self.acmodel(preprocessed_obs)
             action = dist.sample()
             obs, reward, done, info = self.env.step(action.cpu().numpy())
-
 
             self.collect_interactions(info)
 
@@ -300,85 +302,11 @@ class TwoValueHeadsBaseGeneral(ABC):
 
         # process statistics about the agent's behaviour
         # in the environment
-        logs = {
-            "ep_completed": self._finished_episodes,
 
-            "doors_opened": 0,
-            "doors_closed": 0,
-            "doors_interactions": 0,
-
-            "keys_picked": 0,
-            "keys_dropped": 0,
-            "keys_interactions": 0,
-
-            "balls_picked": 0,
-            "balls_dropped": 0,
-            "balls_interactions": 0,
-
-            "boxes_picked": 0,
-            "boxes_dropped": 0,
-            "boxes_interactions": 0
-
-
-        }
-
-        if self._finished_episodes == 0:
-            return logs
-
-        for ep_info in self._ep_statistics:
-            ep_info = ep_info['interactions']
-
-            # count the number of interactions with doors
-            doors_interactions = 0
-            for door in ep_info['doors'].values():
-                logs['doors_opened'] += door['nr_opened']
-                logs['doors_closed'] += door['nr_closed']
-                if door['nr_opened'] > 0:
-                    doors_interactions += 1
-
-            if len(ep_info['doors']) > 0:
-                logs['doors_interactions'] +=\
-                    float(doors_interactions) / len(ep_info['doors'])
-
-            # count the number of interactions with boxes
-            boxes_interactions = 0
-            for box in ep_info['boxes'].values():
-                logs['boxes_picked'] += box["nr_picked_up"]
-                logs['boxes_dropped'] += box["nr_put_down"]
-                if box['nr_picked_up'] > 0 :
-                    boxes_interactions += 1
-
-            if len(ep_info['boxes']) > 0:
-                logs['boxes_interactions'] +=\
-                    float(boxes_interactions) / len(ep_info['boxes'])
-
-            # count the number of interactions with balls
-            balls_interactions = 0
-            for ball in ep_info['balls'].values():
-                logs['balls_picked'] += ball["nr_picked_up"]
-                logs['balls_dropped'] += ball["nr_put_down"]
-                if ball['nr_picked_up'] > 0 :
-                    balls_interactions += 1
-
-            if len(ep_info['balls']) > 0:
-                logs['balls_interactions'] +=\
-                    float(balls_interactions) / len(ep_info['balls'])
-
-            # count the number of interactions with keys
-            keys_interactions = 0
-            for key in ep_info['keys'].values():
-                logs['keys_picked'] += key["nr_picked_up"]
-                logs['keys_dropped'] += key["nr_put_down"]
-                if key['nr_picked_up'] > 0 :
-                    keys_interactions += 1
-
-            if len(ep_info['keys']) > 0:
-                logs['keys_interactions'] +=\
-                    float(keys_interactions) / len(ep_info['keys'])
-
-        for log_key in logs:
-            if log_key != 'ep_completed':
-                logs[log_key] /= float(logs['ep_completed'])
+        if self._finished_episodes < self._min_stats_ep_batch:
+            return get_interactions_stats([])
+        else:
+            logs = get_interactions_stats(self._ep_statistics)
 
         # reset statistics
         self._finished_episodes = 0
