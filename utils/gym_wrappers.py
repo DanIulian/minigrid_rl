@@ -282,14 +282,14 @@ class OccupancyMap(Wrapper):
         return occupancy
 
     def get_obstructedmaze_3room(self, full_grid: np.array) -> np.array:
-        room_size = self.env.room_size
+        room_size = self.env.unwrapped.room_size
         occupancy = np.zeros_like(full_grid[:, :, 0])
         occupancy[:, -room_size:] = 1
         occupancy[room_size-1:room_size*2, room_size-1:] = 1
         return occupancy
 
     def get_obstructedmaze_6room(self, full_grid: np.array) -> np.array:
-        room_size = self.env.room_size
+        room_size = self.env.unwrapped.room_size
         occupancy = np.zeros_like(full_grid[:, :, 0])
         occupancy[:, -room_size:] = 1
         occupancy[room_size-1:room_size*2, room_size-1:] = 1
