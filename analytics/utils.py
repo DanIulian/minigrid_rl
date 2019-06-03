@@ -4,9 +4,12 @@ import os
 from pandas.io.json.normalize import nested_to_record
 import yaml
 import natsort
+import numpy as np
+from typing import Dict, Tuple, List
 
 
-def get_experiment_files(experiment_path: str, files: dict= {}, flag=False):
+def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
+        -> Tuple[Dict, pd.DataFrame, pd.DataFrame]:
 
     # Assumes each directory (/ experiment run) has a unique cfg
     cfg_files = glob.glob(f"{experiment_path}/**/cfg.yaml", recursive=True)
@@ -38,17 +41,21 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False):
         else:
             put_manual_id = True
             experiment_id = config_data["cfg_id"]
+
         run_id = getattr(config_data, "run_id", 0)
 
         data[run_index]["experiment_id"] = experiment_id
         data[run_index]["run_id"] = run_id
 
-
         if flag:
             cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
 
         else:
-            cfg_df = pd.DataFrame(nested_to_record(config_data))
+            nc = nested_to_record(config_data)
+            for k, v in nc.items():
+                if isinstance(v, list):
+                    nc[k] = np.array(v).astype(np.object)
+            cfg_df = pd.DataFrame.from_dict(nc, orient="index").transpose()
 
         cfg_df["run_name"] = run_name
         cfg_df["run_index"] = run_index
@@ -67,7 +74,7 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False):
             file_data = file_path
             if hasattr(pd, str(file_type)) and file_path is not None:
                 # Some bad header for experiments Fix
-                # file_data = getattr(pd, file_type)(file_path, skiprows=1, names=['update', 'frames', 'FPS', 'duration', 'rreturn_mean', 'rreturn_std', 'rreturn_min', 'rreturn_max', 'num_frames_mean', 'num_frames_std', 'num_frames_min', 'num_frames_max', 'entropy', 'value', 'policy_loss', 'value_loss', 'grad_norm', 'value_ext', 'value_int', 'value_ext_loss', 'value_int_loss', 'return_mean', 'return_std', 'return_min', 'return_max'])
+
                 file_data = getattr(pd, file_type)(file_path)
                 if put_manual_id:
                     file_data["experiment_id"] = experiment_id

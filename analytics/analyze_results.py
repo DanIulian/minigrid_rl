@@ -15,16 +15,16 @@ import re
 # -- Load experiment Data
 
 
-experiment_path = "results/2019Apr10-202258_multiple_envs_icm/"
-data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+# experiment_path = "results/2019Apr10-202258_multiple_envs_icm/"
+# data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+
 
 def extract_name(s):
-    s = re.sub("_env[^/]*/", "", s)
-    s = re.sub("^\d*[^_]*_", "", s)
-    return s
+    return int(re.match("^(\d+.)_", s).group(1))
 
 
-def plot_experiment(experiment_path, main_groupby="main.env", x_axis="frames", groupby_clm="run_name", kind="scatter",
+def plot_experiment(experiment_path, main_groupby="main.env", x_axis="frames",
+                    groupby_clm="run_name", color_by="env_cfg.max_episode_steps", kind="scatter",
                     show_legend=False, simple=True):
     # experiment_path = "results/latest/"
     data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
@@ -38,21 +38,19 @@ def plot_experiment(experiment_path, main_groupby="main.env", x_axis="frames", g
     if not os.path.isdir(save_path):
         os.mkdir(save_path)
 
-    not_plot = ['frames', 'run_id', 'run_index', 'update', 'cfg_id', 'comment', 'commit', 'experiment',
+    not_plot = ['experiment_id', 'frames', 'run_id', 'run_index', 'update', 'cfg_id', 'comment',
+                'commit', 'experiment', 'run_id_y', 'run_id_x'
                 'extra_logs', 'out_dir', 'resume', 'title', '_experiment_parameters.env',  'run_name', 'cfg_dir']
 
     plot_data = set(df.columns) - set(not_plot)
     plot_data = [x for x in plot_data if "." not in x]
 
     experiment_name, exp_gdf = next(iter(experiments_group))
-    no_subgroups = exp_gdf.groupby(groupby_clm).ngroups
-    subgroup_names = list(exp_gdf.groupby(groupby_clm).groups.keys())
-    if not simple:
-        subgroup_titles = [extract_name(x) for x in subgroup_names]
-    else:
-        subgroup_titles = [str(x) for x in subgroup_names]
 
-    colors = cm.rainbow(np.linspace(0, 1, no_subgroups))
+    no_colors = exp_gdf[color_by].nunique()
+    subgroup_titles = list(exp_gdf[color_by].unique())
+
+    colors = cm.rainbow(np.linspace(0, 1, no_colors))
     colors_map = {x: y for x, y in zip(subgroup_titles, colors)}
     legend_elements = {color_name: Line2D([0], [0], marker='o', color=colors_map[color_name], label='Scatter',
                                           markerfacecolor=colors_map[color_name], markersize=7)
@@ -61,6 +59,8 @@ def plot_experiment(experiment_path, main_groupby="main.env", x_axis="frames", g
     size = int(pow(experiments_group.ngroups, 1/2))+1
 
     for plot_p in plot_data:
+        print(f"Plotting {plot_p} ...")
+
         plt.figure()
         # Iterate through continents
         share_ax = None
@@ -74,7 +74,9 @@ def plot_experiment(experiment_path, main_groupby="main.env", x_axis="frames", g
                 exp_gdf.groupby(groupby_clm).plot(x_axis, plot_p, ax=ax, legend=False, kind=kind)
             else:
                 for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
-                    color_name = extract_name(sub_group_name)
+                    assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
+                                                                  f"unique in subgroup"
+                    color_name = sub_group_df[color_by].unique()[0]
                     sub_group_df.plot(x_axis, plot_p, ax=ax, legend=False, kind=kind, c=colors_map[color_name], s=1.)
 
             # set the title
