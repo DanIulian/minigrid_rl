@@ -15,7 +15,7 @@ matplotlib.rcParams['axes.titlesize'] = 'medium'
 EXCLUDED_PLOTS = [
     'experiment_id', 'frames', 'run_id', 'run_index', 'update', 'cfg_id', 'comment', 'commit',
     'experiment', 'run_id_y', 'run_id_x' 'extra_logs', 'out_dir', 'resume',  'title',
-    '_experiment_parameters.env', 'run_name', 'cfg_dir', 'extra_logs'
+    '_experiment_parameters.env', 'run_name', 'cfg_dir', 'extra_logs', "duration", "run_id_x",
 ]
 
 
@@ -102,7 +102,7 @@ def plot_experiment(experiment_path,
     # ==============================================================================================
 
     # Validate config
-    assert (kind == "error_bar") == (rolling_window is not None), "Window only for error_bar"
+    assert (plot_type == "error_bar") == (rolling_window is not None), "Window only for error_bar"
 
     # ==============================================================================================
 
@@ -113,7 +113,7 @@ def plot_experiment(experiment_path,
     experiments_group = df.groupby(main_groupby, sort=False)
 
     # Get path to save plots
-    save_path = get_out_dir(experiment_path, new_out_dir)
+    save_path = get_out_dir(experiment_path, new_out_dir=new_out_dir)
 
     # Run column name
     run_idx = "run_id" if "run_id" in df.columns else "run_id_y"
@@ -165,27 +165,30 @@ def plot_experiment(experiment_path,
                 for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
                     print(f" Sub-group name: {sub_group_name}")
 
-                    assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
-                                                                  f"unique in subgroup"
+                    try:
+                        assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
+                                                                      f"unique in subgroup"
 
-                    color_name = sub_group_df[color_by].unique()[0]
+                        color_name = sub_group_df[color_by].unique()[0]
 
-                    sub_group_dfs = sub_group_df[[x_axis, weights_cl, plot_f]]
+                        sub_group_dfs = sub_group_df[[x_axis, weights_cl, plot_f]]
 
-                    unique_x = sub_group_dfs[x_axis].unique()
-                    unique_x.sort()
+                        unique_x = sub_group_dfs[x_axis].unique()
+                        unique_x.sort()
 
-                    means = np.zeros(len(unique_x))
-                    stds = np.zeros(len(unique_x))
+                        means = np.zeros(len(unique_x))
+                        stds = np.zeros(len(unique_x))
 
-                    for idxs in range(len(unique_x) - rolling_window):
-                        wmean, wstd = calc_window_stats(sub_group_dfs, x_axis,
-                                                        unique_x[idxs],
-                                                        unique_x[idxs + rolling_window],
-                                                        plot_f, weights_cl)
+                        for idxs in range(len(unique_x) - rolling_window):
+                            wmean, wstd = calc_window_stats(sub_group_dfs, x_axis,
+                                                            unique_x[idxs],
+                                                            unique_x[idxs + rolling_window],
+                                                            plot_f, weights_cl)
 
-                        means[idxs] = wmean
-                        stds[idxs] = wstd
+                            means[idxs] = wmean
+                            stds[idxs] = wstd
+                    except:
+                        print("Errorr")
 
                     error_fill_plot(unique_x, means, stds, color=colors_map[color_name], ax=ax)
             elif plot_type == "color":
@@ -237,16 +240,16 @@ if __name__ == "__main__":
     parser.add_argument('--main_groupby', nargs='+', default="main.env")
     parser.add_argument('--groupby_clm', default="env_cfg.max_episode_steps")
     parser.add_argument('--color_by', default="env_cfg.max_episode_steps")
-    parser.add_argument('--show_legend', default=False)
-    parser.add_argument('--rolling_window', default=None)
+    parser.add_argument('--no_legend', action='store_true')
+    parser.add_argument('--rolling_window', type=int, default=None)
     parser.add_argument('--weights_cl', default="ep_completed")
-    parser.add_argument('--new_out_dir', action='store_true')
+    parser.add_argument('--same_dir', action='store_true')
     args = parser.parse_args()
 
     # experiment_path,
     plot_experiment(args.experiment_path, x_axis=args.x_axis, plot_type=args.plot_type,
                     kind=args.kind, plot_data=args.plot_data, main_groupby=args.main_groupby,
                     groupby_clm=args.groupby_clm, color_by=args.color_by,
-                    show_legend=args.show_legend, rolling_window=args.rolling_window,
-                    weights_cl=args.weights_cl, new_out_dir=args.new_out_dir)
+                    show_legend=(not args.no_legend), rolling_window=args.rolling_window,
+                    weights_cl=args.weights_cl, new_out_dir=(not args.same_dir))
 
