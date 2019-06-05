@@ -42,7 +42,7 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
             put_manual_id = True
             experiment_id = config_data["cfg_id"]
 
-        run_id = getattr(config_data, "run_id", 0)
+        run_id = config_data.get("run_id", 0)
 
         data[run_index]["experiment_id"] = experiment_id
         data[run_index]["run_id"] = run_id
