@@ -18,6 +18,7 @@ class WorldsModels(nn.Module, torch_rl.RecurrentACModel):
         super().__init__()
 
         connect_worlds = getattr(cfg, "connect_worlds", True)
+        full_state_size = getattr(cfg, "full_state_size", [10, 10, 3])
 
         self.policy_model = WorldsPolicyModel(cfg, obs_space, action_space, use_memory=use_memory,
                                               use_text=use_text)
@@ -33,7 +34,7 @@ class WorldsModels(nn.Module, torch_rl.RecurrentACModel):
 
         self.evaluator_network = EvaluationNet(cfg,
                                                self.envworld_network.memory_size,
-                                               cfg.full_state_size)
+                                               full_state_size)
 
         # self.random_target = RandomNetwork(cfg, obs_space, action_space)
 
