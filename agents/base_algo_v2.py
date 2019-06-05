@@ -1,6 +1,6 @@
 # AndreiN, 2019
 
-from torch_rl.algos.base import BaseAlgo
+from agents.base import BaseAlgo
 from abc import abstractmethod
 
 
