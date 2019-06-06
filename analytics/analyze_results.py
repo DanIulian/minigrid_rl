@@ -71,7 +71,7 @@ def calc_window_stats_helper(args):
 
 
 def get_out_dir(experiment_path, new_out_dir=False):
-    if new_out_dir:
+    if not new_out_dir:
         save_path = os.path.join(experiment_path, "analysis_0")
     else:
         import glob
@@ -82,6 +82,8 @@ def get_out_dir(experiment_path, new_out_dir=False):
         else:
             last_idx = 0
         save_path = os.path.join(experiment_path, f"analysis_{last_idx+1}")
+
+    print(f"Saving to ...{save_path} (new dir:{new_out_dir})")
     if not os.path.isdir(save_path):
         os.mkdir(save_path)
     return save_path
@@ -197,7 +199,7 @@ def plot_experiment(experiment_path,
                                                                   f"unique in subgroup"
                     color_name = sub_group_df[color_by].unique()[0]
                     sub_group_df.plot(x_axis, plot_f, ax=ax, legend=False, kind=kind,
-                                      c=colors_map[color_name], s=1.)
+                                      c=colors_map[color_name].reshape(1, -1), s=1.)
 
             elif plot_type == "simple":
                 exp_gdf.groupby(groupby_clm).plot(x_axis, plot_f, ax=ax, legend=False, kind=kind)
