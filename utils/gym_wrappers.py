@@ -537,7 +537,7 @@ class GetImportantInteractions(Wrapper):
 
     def step(self, action):
 
-        if action.name == 'toggle':
+        if action == 5:
             self.check_broken_box()
         observation, reward, done, info = self.env.step(action)
 
