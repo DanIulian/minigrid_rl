@@ -391,6 +391,7 @@ def get_interactions_stats(ep_statistics):
 
         "boxes_picked": 0,
         "boxes_dropped": 0,
+        "boxes_broken": 0,
         "boxes_interactions": 0,
 
         "objects_interactions": 0,
@@ -445,11 +446,12 @@ def get_interactions_stats(ep_statistics):
         stats_interactions(ep_info['doors'], doors_interactions)
 
         # count the mean number of interactions with boxes
-        boxes_interactions, boxes_picked, boxes_dropped = 0., 0., 0.
+        boxes_interactions, boxes_picked, boxes_dropped, boxes_broken = 0., 0., 0., 0.
         for box in ep_info['boxes'].values():
             boxes_picked += box["nr_picked_up"]
             boxes_dropped += box["nr_put_down"]
-            if box['nr_picked_up'] > 0:
+            boxes_broken += box['broken']
+            if box['nr_picked_up'] > 0 or box['broken'] > 0:
                 boxes_interactions += 1
 
         if len(ep_info['boxes']) > 0 and boxes_interactions > 0:
@@ -457,6 +459,7 @@ def get_interactions_stats(ep_statistics):
                 float(boxes_interactions) / len(ep_info['boxes'])
             logs['boxes_picked'] += boxes_picked / boxes_interactions
             logs['boxes_dropped'] += boxes_dropped / boxes_interactions
+            logs['boxes_broken'] += boxes_broken / boxes_interactions
 
         stats_interactions(ep_info['boxes'], boxes_interactions)
 
@@ -525,8 +528,17 @@ class GetImportantInteractions(Wrapper):
             "key": {}
         }
         self.carrying = False
+        self.directions = {
+            0: (1, 0),
+            1: (0, 1),
+            2: (-1, 0),
+            3: (0, -1)
+        }
 
     def step(self, action):
+
+        if action == 5:
+            self.check_broken_box()
         observation, reward, done, info = self.env.step(action)
 
         self.check_doors()
@@ -575,6 +587,16 @@ class GetImportantInteractions(Wrapper):
                             self.objects[obj_type][obj_pos]["nr_put_down"]:
                         self.objects[obj_type][obj_pos]["nr_put_down"] += 1
 
+    def check_broken_box(self):
+        agent_pos = self.env.unwrapped.agent_pos
+        agent_dir = self.directions[self.env.unwrapped.agent_dir]
+        front_pos = (agent_pos[0] + agent_dir[0], agent_pos[1] + agent_dir[1])
+        front_obj = self.grid.get(front_pos[0], front_pos[1])
+        if front_obj!= None and front_obj.type == 'box':
+            obj_pos = tuple(front_obj.init_pos)
+            self.objects['box'][obj_pos]['broken'] = 1
+
+
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
 
@@ -600,12 +622,23 @@ class GetImportantInteractions(Wrapper):
                             "nr_opened": 0,
                             "nr_closed": 0
                         }
-                    elif (v.type == 'key') or (v.type == 'box') or (v.type == 'ball'):
-
+                    elif (v.type == 'key')  or (v.type == 'ball'):
                         self.objects[v.type][(i, j)] = {
                             "color": v.color,
                             "nr_picked_up": 0,
                             "nr_put_down": 0
+                        }
+
+                        # if initial position for object is not present, add it
+                        if v.init_pos is None:
+                            v.init_pos = np.array([i, j])
+
+                    elif v.type == 'box':
+                        self.objects[v.type][(i, j)] = {
+                            "color": v.color,
+                            "nr_picked_up": 0,
+                            "nr_put_down": 0,
+                            "broken": 0,
                         }
                         # check if there is a key inside the box
                         if v.contains:
@@ -788,7 +821,7 @@ def main():
         "--env-name",
         dest="env_name",
         help="gym environment to load",
-        default='MiniGrid-Empty-6x6-v0'
+        default='MiniGrid-DoorKey-8x8-v0'
     )
     (options, args) = parser.parse_args()
 
