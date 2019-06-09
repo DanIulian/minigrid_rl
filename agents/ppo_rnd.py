@@ -10,6 +10,7 @@ from agents.two_v_base import TwoValueHeadsBase
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 
+
 class PPORND(TwoValueHeadsBase):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
@@ -155,7 +156,6 @@ class PPORND(TwoValueHeadsBase):
                     batch_loss += loss
                     batch_ret_int += sb.returnn_int.mean().item()
                     batch_rew_int += sb.reward_int.mean().item()
-
 
                     # Update memories for next epoch
 

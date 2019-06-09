@@ -80,7 +80,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.optimizer_evaluator_base = getattr(torch.optim, optimizer)(
             self.acmodel.base_evaluator_network.parameters(), **optimizer_args)
 
-
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
             self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])

@@ -4,16 +4,19 @@
 
 from abc import ABC, abstractmethod
 import torch
-import numpy
+from copy import deepcopy
 
 from torch_rl.format import default_preprocess_obss
 from torch_rl.utils import DictList, ParallelEnv
+from utils.gym_wrappers import get_interactions_stats
+
 
 class TwoValueHeadsBase(ABC):
     """The base class for RL algorithms."""
 
     def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
-                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred):
+                 value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
+                 exp_used_pred, min_stats_ep_batch=16):
         """
         Initializes a `BaseAlgo` instance.
 
@@ -65,6 +68,12 @@ class TwoValueHeadsBase(ABC):
         self.preprocess_obss = preprocess_obss or default_preprocess_obss
         self.reshape_reward = reshape_reward
         self.exp_used_pred = exp_used_pred
+
+        # Initialize episode statistics values
+
+        self._finished_episodes = 0
+        self._ep_statistics = []
+        self._min_stats_ep_batch = min_stats_ep_batch
 
         # Store helpers values
 
@@ -138,7 +147,9 @@ class TwoValueHeadsBase(ABC):
                 else:
                     dist, value = self.acmodel(preprocessed_obs)
             action = dist.sample()
-            obs, reward, done, _ = self.env.step(action.cpu().numpy())
+            obs, reward, done, info = self.env.step(action.cpu().numpy())
+
+            self.collect_interactions(info)
 
             # Update experiences values
 
@@ -262,12 +273,41 @@ class TwoValueHeadsBase(ABC):
             "num_frames": self.num_frames
         }
 
+        aux_logs = self.process_interactions()
+        # add extra logs with agent interactions
+        for k in aux_logs:
+            log[k] = aux_logs[k]
+
         self.log_done_counter = 0
         self.log_return = self.log_return[-self.num_procs:]
         self.log_reshaped_return = self.log_reshaped_return[-self.num_procs:]
         self.log_num_frames = self.log_num_frames[-self.num_procs:]
 
         return exps, log
+
+    def collect_interactions(self, info):
+
+        # collect all end-of-episode statistics about environment
+        for env_info in info:
+            if len(env_info) > 0:
+                self._finished_episodes += 1
+                self._ep_statistics.append(deepcopy(env_info))
+
+    def process_interactions(self):
+
+        # process statistics about the agent's behaviour
+        # in the environment
+
+        if self._finished_episodes < self._min_stats_ep_batch:
+            return get_interactions_stats([])
+        else:
+            logs = get_interactions_stats(self._ep_statistics)
+
+        # reset statistics
+        self._finished_episodes = 0
+        self._ep_statistics = []
+
+        return logs
 
     @abstractmethod
     def update_parameters(self):
