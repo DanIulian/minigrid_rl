@@ -1,3 +1,23 @@
+"""
+Examples:
+python -m analytics.analyze_results 'exp_path  --plot_type error_bar --rolling_window 8 --plot_data
+                    rreturn_mean --groupby_clm "agent.name" --color_by "agent.name"
+
+MELT DATA
+python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8
+
+python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8
+    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" --max_frames 1e+06
+    --filter_by "env_cfg.max_episode_steps" --filter_value 400  --melt_data doors_opened keys_picked
+    boxes_picked balls_picked
+
+python -m analytics.analyze_results 'exp_path' --plot_type error_bar --rolling_window 8
+    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" --max_frames 1e+06
+    --filter_by "env_cfg.max_episode_steps" --filter_value 400  --melt_data doors_opened keys_picked
+    boxes_picked balls_picked balls_dropped doors_closed boxes_dropped keys_dropped
+
+"""
+
 import matplotlib
 from matplotlib.lines import Line2D
 import matplotlib.cm as cm
@@ -5,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import re
+import pandas as pd
 
 from analytics.utils import get_experiment_files
 
@@ -63,7 +84,7 @@ def calc_window_stats(df, index_cl, min_index, max_idx, feature_cl, weights_cl):
 
     wmean = calc_wavg(window, feature_cl, weights_cl)  # Mean over
     wstd = np.sqrt(calc_wvar(window, feature_cl, weights_cl, wmean))
-    return wmean, wstd
+    return wmean, wstd, window
 
 
 def calc_window_stats_helper(args):
@@ -95,7 +116,10 @@ def plot_experiment(experiment_path,
                     color_by="env_cfg.max_episode_steps",
                     show_legend=False, simple=True,
                     rolling_window=None, weights_cl="ep_completed",
-                    new_out_dir=False):
+                    new_out_dir=False,
+                    max_frames=None,
+                    melt_data=None,
+                    filter_by=None, filter_value=None):
     """
     :param plot_type: [simple, error_bar, color]
     :param rolling_window: Used for error_bar kind
@@ -110,6 +134,34 @@ def plot_experiment(experiment_path,
 
     # Get experiment data
     data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+
+    # ==============================================================================================
+    # -- FILTER VALUES
+    if max_frames:
+        print(f"Before max_frames filter: {len(df)}")
+        df = df[df["frames"] <= max_frames]
+        print(f"After max_frames filter: {len(df)}")
+
+    # Hack to filter some experiments
+    if filter_by and filter_value:
+        print(f"Before filter: {len(df)}")
+        print(f"Filter {filter_by} by {filter_value} from : [{df[filter_by].unique()}]")
+        filter_value = type(df.iloc[0][filter_by])(filter_value)
+        df = df[df[filter_by] == filter_value]
+        print(f"After filter: {len(df)}")
+    else:
+        print("NO FILTER APPLIED")
+
+    # ==============================================================================================
+    # -- SPECIAL MELT data
+    if melt_data:
+        has_clm = [x in df.columns for x in melt_data]
+        assert all(has_clm), f"Incorrect melt list {melt_data}"
+
+        id_vars = list(set(df.columns) - set(melt_data))
+        df = pd.melt(df, id_vars=id_vars, var_name="Melt_type", value_name="Melt_value")
+
+    # ==============================================================================================
 
     # For each subplot
     experiments_group = df.groupby(main_groupby, sort=False)
@@ -138,6 +190,12 @@ def plot_experiment(experiment_path,
         markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
 
     # ==============================================================================================
+    # Custom
+    
+    export_max_window = True
+    export_data = dict()
+
+    # ==============================================================================================
 
     size = int(pow(experiments_group.ngroups, 1/2))+1
 
@@ -147,6 +205,7 @@ def plot_experiment(experiment_path,
         plt.figure()
         share_ax = None
         share_ay = None
+        export_data[plot_f] = dict()
 
         # Iterate through continents
         for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
@@ -159,6 +218,7 @@ def plot_experiment(experiment_path,
                 share_ax = ax
             if share_ax is None:
                 share_ay = ax
+            export_data[plot_f][experiment_name] = dict()
 
             # ======================================================================================
 
@@ -167,14 +227,25 @@ def plot_experiment(experiment_path,
                 for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
                     print(f" Sub-group name: {sub_group_name}")
 
+                    export_data[plot_f][experiment_name][sub_group_name] = dict()
+                    crd_dict = export_data[plot_f][experiment_name][sub_group_name]
+                    max_mean = - np.inf
+
                     try:
                         assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
                                                                       f"unique in subgroup"
 
                         color_name = sub_group_df[color_by].unique()[0]
 
-                        sub_group_dfs = sub_group_df[[x_axis, weights_cl, plot_f]]
+                        if weights_cl not in sub_group_df.columns:
+                            print(f"[ERROR] No weight column, will fill with 1 ({weights_cl})")
+                            sub_group_df[weights_cl] = 1
+                        else:
+                            if sub_group_df[weights_cl].isna().any():
+                                print(f"[ERROR] Some ({weights_cl}) are NaN ")
+                                sub_group_df[weights_cl] = sub_group_df[weights_cl].fillna(1.)
 
+                        sub_group_dfs = sub_group_df[[x_axis, weights_cl, plot_f]]
                         unique_x = sub_group_dfs[x_axis].unique()
                         unique_x.sort()
 
@@ -182,15 +253,19 @@ def plot_experiment(experiment_path,
                         stds = np.zeros(len(unique_x))
 
                         for idxs in range(len(unique_x) - rolling_window):
-                            wmean, wstd = calc_window_stats(sub_group_dfs, x_axis,
-                                                            unique_x[idxs],
-                                                            unique_x[idxs + rolling_window],
-                                                            plot_f, weights_cl)
+                            wmean, wstd, win = calc_window_stats(sub_group_dfs, x_axis,
+                                                                 unique_x[idxs],
+                                                                 unique_x[idxs + rolling_window],
+                                                                 plot_f, weights_cl)
 
                             means[idxs] = wmean
                             stds[idxs] = wstd
+
+                            if wmean > max_mean:
+                                crd_dict["df"] = win
+                                max_mean = wmean
                     except:
-                        print("Errorr")
+                        print("Error!!!!!!!!!")
 
                     error_fill_plot(unique_x, means, stds, color=colors_map[color_name], ax=ax)
             elif plot_type == "color":
@@ -229,6 +304,9 @@ def plot_experiment(experiment_path,
         plt.savefig(f"{save_path}/{plot_f}.png")
         plt.close()
 
+    if export_max_window:
+        np.save(f"{save_path}/data", export_data)
+
 
 if __name__ == "__main__":
     import argparse
@@ -246,6 +324,12 @@ if __name__ == "__main__":
     parser.add_argument('--rolling_window', type=int, default=None)
     parser.add_argument('--weights_cl', default="ep_completed")
     parser.add_argument('--same_dir', action='store_true')
+
+    parser.add_argument('--max_frames', type=float, default=None)
+    parser.add_argument('--melt_data',  nargs='+', default=None)
+    parser.add_argument('--filter_by',  default=None)
+    parser.add_argument('--filter_value',  default=None)
+
     args = parser.parse_args()
 
     # experiment_path,
@@ -253,5 +337,7 @@ if __name__ == "__main__":
                     kind=args.kind, plot_data=args.plot_data, main_groupby=args.main_groupby,
                     groupby_clm=args.groupby_clm, color_by=args.color_by,
                     show_legend=(not args.no_legend), rolling_window=args.rolling_window,
-                    weights_cl=args.weights_cl, new_out_dir=(not args.same_dir))
+                    weights_cl=args.weights_cl, new_out_dir=(not args.same_dir),
+                    max_frames=args.max_frames, melt_data=args.melt_data,
+                    filter_by=args.filter_by, filter_value=args.filter_value)
 
