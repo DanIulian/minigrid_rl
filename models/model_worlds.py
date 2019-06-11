@@ -264,8 +264,8 @@ class AgentWorld(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        hidden_size = getattr(cfg, "hidden_size", 128)
-        self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
+        hidden_size = getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 256)
         self._use_agstate_embedding = getattr(cfg, "use_agstate_embedding", True)
 
         channels = 3
@@ -301,18 +301,18 @@ class AgentWorld(nn.Module):
         self.fc2 = nn.Sequential(
             # nn.Linear(memory_size + embedding_size, memory_size),
             nn.Linear(embedding_size + embedding_size, memory_size),
-            nn.LeakyReLU(),
-            # nn.Linear(memory_size, memory_size),
-            # nn.LeakyReLU(),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, action_space.n),
             # nn.ReLU()
         )
 
         self.fc3 = nn.Sequential(
             nn.Linear(memory_size + action_space.n, memory_size),
-            nn.ReLU(),
-            # nn.Linear(memory_size, memory_size),
-            # nn.ReLU(),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, embedding_size),
             # nn.ReLU()
         )
@@ -364,8 +364,9 @@ class AgentState(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        hidden_size = getattr(cfg, "hidden_size", 128)
-        self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
+        print(cfg)
+        hidden_size = getattr(cfg, "hidden_size", 256)
+        self._memory_size = memory_size = getattr(cfg, "memory_size", 256)
         channels = 3
         self.action_space = torch.Size((action_space.n, ))
 
@@ -398,19 +399,19 @@ class AgentState(nn.Module):
         # TODO should get memory from agent world
         self.fc2 = nn.Sequential(
             nn.Linear(memory_size + memory_size, memory_size),
-            nn.LeakyReLU(),
-            # nn.Linear(memory_size, memory_size),
-            # nn.LeakyReLU(),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, action_space.n),
             # nn.ReLU()
         )
 
         self.fc_predict_state = nn.Sequential(
             nn.Linear(memory_size + action_space.n, memory_size),
-            nn.LeakyReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(memory_size, memory_size),
-            # nn.LeakyReLU(),
-            # nn.Linear(memory_size, memory_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(memory_size, memory_size),
             # nn.ReLU()
         )
 
