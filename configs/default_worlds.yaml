@@ -4,14 +4,14 @@ main:
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 6 # type=int, default=16, help="number of processes (default: 16)")
-  frames: 2.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  frames: 2.e+7  # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   eval_interval: 2000
   save_interval: 2000 # type=int, default=0, help="number of updates between two saves (default: 0,
   tb: false # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
-  max_eprews: 2.93 # Cap training when mean episode rewards reaches this value
+  max_eprews: 0.95 # Cap training when mean episode rewards reaches this value
   save_best: fasle
   save_all: fasle
 
@@ -57,8 +57,8 @@ agent:
   pred_gap_factor: 1
 
   norm_iR_rnd_style: true
-  predict_state_bck: true
-  train_ap_cross_e_gap: true
+  predict_state_bck: false
+  train_ap_cross_e_gap: false
   train_distance_triplets: 0
   distance_margin: 1.
   pred_state_rnn_mode: true
@@ -66,7 +66,7 @@ agent:
   intrinsic_norm_gap: false
   action_pred_factor: false
   calc_act_pred: false
-  intrinsic_gaps: [1] #[1, 2, 3] #[1, 2, 3]
+  intrinsic_gaps: [1,2,3] #[1, 2, 3] #[1, 2, 3]
   save_experience_batch: 0
 
 model:
