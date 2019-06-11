@@ -100,8 +100,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.agworld_use_emb = agworld_use_emb = getattr(cfg, "agworld_use_emb", 0)
 
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 4)
-        self.max_pred_gap = max_pred_gap = getattr(cfg, "max_pred_gap", 5)
-        self.pred_gap_factor = pred_gap_factor = getattr(cfg, "pred_gap_factor", 4)
+        # self.max_pred_gap = max_pred_gap = getattr(cfg, "max_pred_gap", 5)
+        # self.pred_gap_factor = pred_gap_factor = getattr(cfg, "pred_gap_factor", 4)
 
         # Agent state exploration configs
         self.train_distance_triplets = getattr(cfg, "train_distance_triplets", 0)
@@ -120,10 +120,15 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         self.predict_state_bck = getattr(cfg, "predict_state_bck", True)
         self.use_agstate_embedding = getattr(cfg, "use_agstate_embedding", True)
 
-        gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
-        gap_prob = torch.ones(max_pred_gap)
-        gap_prob = gap_prob.float()/gap_prob.sum()
-        self.gap_distribution = torch.distributions.Categorical(probs=gap_prob)
+        # gap_prob = torch.flip(torch.arange(1, max_pred_gap + 1), (0,)) ** pred_gap_factor
+        # gap_prob = torch.ones(max_pred_gap)
+        # gap_prob = gap_prob.float()/gap_prob.sum()
+        # self.gap_distribution = [torch.distributions.Categorical(probs=gap_prob)]
+        self.max_pred_gap = max(self.intrinsic_gaps)
+        self.gap_distribution = []
+
+        for gap_no in self.intrinsic_gaps:
+            self.gap_distribution.append(lambda : torch.Tensor([gap_no]).int()[0])
 
         if self.train_ap_cross_e_gap:
             assert self.max_pred_gap == 1, "Cannot train cross entropy on action prediction with " \
@@ -502,7 +507,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         loss_m_eworld = torch.nn.MSELoss()
         loss_m_eval = torch.nn.MSELoss()
         loss_m_ag_ap_cross = torch.nn.CrossEntropyLoss()
-        loss_m_agstate = torch.nn.MSELoss()
+        loss_m_agstate = torch.nn.BCEWithLogitsLoss()  # torch.nn.MSELoss()
         loss_m_agstate_p = torch.nn.MSELoss()
         loss_m_triplet = TripletLoss(distance_margin)
 
@@ -573,7 +578,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
             # --------------------------------------------------------------------------------------
             # -- Backward ICM
 
-            for i in range(gap_size, no_steps)[::-1]:
+            for i in range(gap_size, no_steps)[::-1]:  # Could start from gap_size
 
                 obs = crt_embeddings[i] if use_agstate_embedding else f.obs_image[inds + i]
                 next_mask = f.mask[inds + i + 1]  # Next state mask
@@ -640,7 +645,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     action_hist = actions_onehot[i: i+gap_size].sum(dim=0)
 
                     # normalize
-                    action_hist.div_(max_action_hist)
+                    action_hist.div_(action_hist.max(dim=1)[0].unsqueeze(1))  # Normalize by max
+                    # action_hist.div_(max_action_hist)
                     action_hist = action_hist.to(device)
 
                     # TODO --- again slow :(
@@ -923,42 +929,45 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         # No envs necessary per batch - to get a batch of same no steps
         envs_factor = int(rec_batch_size // num_procs)
 
-        split_no_steps = []
-        no_frames = padding
-        max_frames = num_frames_per_proc - padding
-        while True:
-            steps = gap_distribution.sample() + 1 + recurrence
-            exp_steps = steps * envs_factor
-            if no_frames + exp_steps > max_frames:
-                break
-            no_frames += exp_steps
-            split_no_steps += [steps] * envs_factor
-
-        if (no_frames + recurrence + 1) * envs_factor <= max_frames:
-            steps = (max_frames - no_frames) // envs_factor
-            split_no_steps += [steps] * envs_factor
-
-        split_no_steps = torch.stack(split_no_steps)
-        split_no_steps = np.random.permutation(split_no_steps)
-        frame_idx = np.hstack([np.array([padding]), split_no_steps])
-        frame_idx = np.cumsum(frame_idx)[:-1]
-
-        indexes = np.resize(frame_idx.reshape((1, -1)), (num_procs, len(frame_idx)))
-        split_no_steps_i = np.resize(split_no_steps.reshape((1, -1)),
-                                     (num_procs, len(split_no_steps)))
-
-        split_no_steps_i = split_no_steps_i.reshape(-1)
-        split_no_steps_i_s = split_no_steps_i.argsort()
-
-        indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
-        indexes = indexes.reshape(-1)
-
-        # Should shuffle and pick envs_factor factor splits of same size
         batches_starting_indexes = []
         batches_step_size = []
-        for i in range(0, len(indexes), rec_batch_size):
-            batches_starting_indexes.append(indexes[split_no_steps_i_s[i:i+rec_batch_size]])
-            batches_step_size.append(split_no_steps_i[split_no_steps_i_s[i]])
+
+        for sample_method in gap_distribution:
+            split_no_steps = []
+            no_frames = padding
+            max_frames = num_frames_per_proc - padding
+            while True:
+                q = sample_method()
+                steps = q + 1 + recurrence
+                exp_steps = steps * envs_factor
+                if no_frames + exp_steps > max_frames:
+                    break
+                no_frames += exp_steps
+                split_no_steps += [steps] * envs_factor
+
+            if (no_frames + recurrence + 1) * envs_factor <= max_frames:
+                steps = (max_frames - no_frames) // envs_factor
+                split_no_steps += [steps] * envs_factor
+
+            split_no_steps = torch.stack(split_no_steps)
+            split_no_steps = np.random.permutation(split_no_steps)
+            frame_idx = np.hstack([np.array([padding]), split_no_steps])
+            frame_idx = np.cumsum(frame_idx)[:-1]
+
+            indexes = np.resize(frame_idx.reshape((1, -1)), (num_procs, len(frame_idx)))
+            split_no_steps_i = np.resize(split_no_steps.reshape((1, -1)),
+                                         (num_procs, len(split_no_steps)))
+
+            split_no_steps_i = split_no_steps_i.reshape(-1)
+            split_no_steps_i_s = split_no_steps_i.argsort()
+
+            indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
+            indexes = indexes.reshape(-1)
+
+            # Should shuffle and pick envs_factor factor splits of same size
+            for i in range(0, len(indexes), rec_batch_size):
+                batches_starting_indexes.append(indexes[split_no_steps_i_s[i:i+rec_batch_size]])
+                batches_step_size.append(split_no_steps_i[split_no_steps_i_s[i]])
 
         # test = [
         #     split_no_steps_i[split_no_steps_i_s[i:i+rec_batch_size]]
@@ -1053,7 +1062,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
 
         # ------------------------------------------------------------------------------------------
         # Intrinsic R based on next state prediction
-        gap_distribution = self.gap_distribution
         no_actions = self.env.action_space.n
         max_action_hist = self.max_pred_gap / 2
         device = self.device
@@ -1066,6 +1074,7 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         save = save_experience_batch > 0 and (updates_cnt + 1) % save_experience_batch == 0
 
         loss_m_agstate_p = nn.MSELoss()
+        loss_m_agstate = torch.nn.BCEWithLogitsLoss(reduce=False)
         agstate_mems = f.agstate_mems
         agworld_mems = f.agworld_mems
 
@@ -1101,7 +1110,8 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
                     action_hist = f.actions_onehot[i: i + gap_size].sum(dim=0)
 
                     # normalize
-                    action_hist.div_(max_action_hist)
+                    action_hist.div_(action_hist.max(dim=1)[0].unsqueeze(1))  # Normalize by max
+                    # action_hist.div_(max_action_hist)
                     action_hist = action_hist.to(device)
 
                     # TODO offer error in prediction between game restarts? Seems to do good :D
