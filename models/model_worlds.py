@@ -364,7 +364,6 @@ class AgentState(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        print(cfg)
         hidden_size = getattr(cfg, "hidden_size", 256)
         self._memory_size = memory_size = getattr(cfg, "memory_size", 256)
         channels = 3
