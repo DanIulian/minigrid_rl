@@ -25,7 +25,7 @@ def main():
 
     # Load the gym environment
     env = gym.make(options.env_name)
-    env.max_steps = 30
+    env.max_steps = 400
     env = (env)
     env = GetImportantInteractions(env)
     env = OccupancyMap(env)

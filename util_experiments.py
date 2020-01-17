@@ -28,3 +28,19 @@ for dir_name in selected:
     for f in fs:
         os.remove(f)
 # ======================================================================================================================
+
+import torch
+
+z = torch.rand(4, 10, requires_grad=True)
+t = torch.rand(4, 10, requires_grad=True)
+ln = torch.nn.Linear(10, 10)
+
+out = z + t
+out = ln(out)
+out = out.sum()
+
+
+adfdz, adfdt, *adfdp = torch.autograd.grad(
+            (out,), (z, t) + tuple(ln.parameters()),
+            allow_unused=True, retain_graph=True
+        )

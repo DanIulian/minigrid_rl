@@ -23,7 +23,8 @@ env_cfg:
 
 agent:
   name: PPOIcm
-  frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
+  frames_per_proc: 130 # type=int, default=None, help="number of frames per process before update
+  (default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   optimizer: RMSprop
   optimizer_args:

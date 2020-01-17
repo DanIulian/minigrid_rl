@@ -14,28 +14,36 @@ from matplotlib.lines import Line2D
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 
-matplotlib.rcParams['figure.figsize'] = (18.55, 9.86)
+matplotlib.rcParams['figure.figsize'] = (16, 6)
 matplotlib.rcParams['figure.figsize'] = (3.5*5, 3.5)
 matplotlib.rcParams['axes.titlesize'] = 'medium'
 
 # ==================================================================================================
 # Configure multiple experiment paths
 
+plot_data = "same_state_mean"
 data_paths = \
-    {
-        "ICM": "/media/andrei/Samsung_T51/data_rl/2019Jun01-154212_v1_multiple_envs_icm/analysis_2/data.npy",
-        "PPO": "/media/andrei/Samsung_T51/data_rl/2019Jun05-154454_v1_ppo-multiple-envss/analysis_3/data.npy",
-     }
+{
+"ICM": f"/media/andrei/Samsung_T51/data_rl/multiple_max_steps/2019Jun01-154212_v1_multiple_envs_icm/analysis_{plot_data}/data.npy",
+"PPO": f"/media/andrei/Samsung_T51/data_rl/multiple_max_steps/2019Jun05-154454_v1_ppo-multiple-envss/analysis_{plot_data}/data.npy",
+"RND": f"/media/andrei/Samsung_T51/data_rl/multiple_max_steps/2019Jun09-152149_v1_multiple_envs_rnd/analysis_{plot_data}/data.npy",
+"PE": f"/media/andrei/Samsung_T51/data_rl/multiple_max_steps/2019Jun06-142757_v1_multiple_envs_pe/analysis_{plot_data}/data.npy",
+}
+
+data_paths = \
+{
+"tes": f"/home/andrei/Desktop/2019Jun11-222453_world_tests/analysis_6/data.npy",
+}
 
 
 # ==================================================================================================
 # Configure columns - MULTIPLE Max steps experiments
 
-PLOT_F = "Discovered%"
+PLOT_F = plot_data.capitalize()
 EXPERIMENT = "Env"
 SUBGROUP1 = "Max_steps"
 SUBGROUP2 = "Algorithm"
-FEATURE = "discovered"
+FEATURE = plot_data
 EP_COMPLETED = "ep_completed"
 
 # ==================================================================================================
@@ -86,6 +94,8 @@ def aggregate_data(data_paths):
 
 df = aggregate_data(data_paths)
 
+# df.boxplot("rreturn_mean", ["Env", "Max_steps"], rot=90); plt.show()
+# df.boxplot("categories_interactions", ["Env", "Max_steps"], rot=90); plt.show()
 # ==================================================================================================
 import re
 
@@ -121,13 +131,17 @@ for i in range(len(sub1)):
         tick.append("")
     tick.pop()
 
+flierprops = dict(marker='.', markerfacecolor='black', markersize=1, linestyle='none',
+                  markeredgecolor=None)
+# axes = [axes]
 for n, group in enumerate(groups):
     idf = df[df[subplot_by] == group]
+    idf = idf.sort_values(SUBGROUP2)
 
     bp_dict = idf.boxplot(column=FEATURE, by=[SUBGROUP1, SUBGROUP2], rot=90, ax=axes[n],
                           return_type='both',
                           patch_artist=True,
-                          positions=pos_t)
+                          positions=pos_t, flierprops=flierprops,showfliers=False)
 
     for row_key, (ax, row) in bp_dict.iteritems():
         ax.set_xlabel(f'{SUBGROUP1}')
@@ -135,17 +149,22 @@ for n, group in enumerate(groups):
             box.set_facecolor(next(cc))
 
     axes[n].set_title(get_title(group))
-    axes[n].set_ylabel("Percentage Discovered")
+    if n == 0:
+        axes[n].set_ylabel("Percentage Discovered")
     axes[n].set_xticklabels(tick)
+    # plt.setp(bp_dict['whiskers'], linewidth=3)
 
     # axes[n].set_xticklabels([e[1] for e in idf.columns])
 
-
-markers = [plt.Line2D([0,0], [0,0], color=colors[item], marker='o', linestyle='') for item in
+plt.subplots_adjust(left=0.04, bottom=0.2, right=0.98, top=0.86, wspace=0.07, hspace=0.2)
+markers = [plt.Line2D([0,0], [0,0], color=next(cc), marker='o', linestyle='') for item in
            range(len(sub2))]
-plt.legend(markers, sub2, numpoints=1)
+plt.legend(markers, idf[SUBGROUP2].unique(), numpoints=1)
 
-fig.suptitle(f'Boxplot for best scores for _Discovered_ grouped by (Env, max_steps, Algorithm)')
+fig.set_size_inches(16.0, 4, forward=True)
+
+fig.suptitle(f'{plot_data.capitalize()} boxplot grouped by (Env, Max_steps, Algorithm)')
+# fig.suptitle("")
 plt.show()
 
 
@@ -163,6 +182,14 @@ mean_df["env_name"] = mean_df[EXPERIMENT].apply(get_title)
 
 fig, axes = plt.subplots(2, 1, sharex=True)
 # plt.ticklabel_format(style='sci',axis='y')
+
+mean_score = mean_df.groupby(EXPERIMENT).mean().sort_values(FEATURE, ascending=False)
+idx = mean_score.index.values
+
+pivot = mean_df.pivot("env_name", SUBGROUP1, FEATURE)
+pivot_idx = list(pivot.index)
+idx_s = [pivot_idx.index(get_title(x)) for x in idx]
+print(mean_score.index.values)
 
 ax1 = mean_df.pivot("env_name", SUBGROUP1, FEATURE).iloc[idx_s].plot(kind='bar', ax=axes[0], rot=90)
 ax1.set_ylabel("Maximum reward")
@@ -182,11 +209,4 @@ ax2.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.1e'))
 fig.suptitle("MiniGrid environments Baselines - Max reward", fontsize=16)
 plt.show()
 
-mean_score = mean_df.groupby("Env").mean().sort_values("rreturn_mean", ascending=False)
-idx = mean_score.index.values
-
-pivot = mean_df.pivot("env_name", SUBGROUP1, FEATURE)
-pivot_idx = list(pivot.index)
-idx_s = [pivot_idx.index(get_title(x)) for x in idx]
-print(mean_score.index.values)
 

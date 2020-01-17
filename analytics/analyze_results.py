@@ -6,15 +6,16 @@ python -m analytics.analyze_results 'exp_path  --plot_type error_bar --rolling_w
 MELT DATA
 python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8
 
-python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8
-    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" --max_frames 1e+06
-    --filter_by "env_cfg.max_episode_steps" --filter_value 400  --melt_data doors_opened keys_picked
-    boxes_picked balls_picked
+python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8 \
+    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" \
+    --filter_by "env_cfg.max_episode_steps" --filter_value 400  \
+    --melt_data doors_opened keys_picked \
+    boxes_picked balls_picked boxes_broken
 
 python -m analytics.analyze_results 'exp_path' --plot_type error_bar --rolling_window 8
-    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" --max_frames 1e+06
+    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type"
     --filter_by "env_cfg.max_episode_steps" --filter_value 400  --melt_data doors_opened keys_picked
-    boxes_picked balls_picked balls_dropped doors_closed boxes_dropped keys_dropped
+    boxes_picked balls_picked balls_dropped doors_closed boxes_dropped keys_dropped boxes_broken
 
 """
 
@@ -30,7 +31,7 @@ import pandas as pd
 from analytics.utils import get_experiment_files
 
 matplotlib.use('TkAgg')
-matplotlib.rcParams['figure.figsize'] = (18.55, 9.86)
+matplotlib.rcParams['figure.figsize'] = (16.0, 5)
 matplotlib.rcParams['axes.titlesize'] = 'medium'
 
 EXCLUDED_PLOTS = [
@@ -38,6 +39,12 @@ EXCLUDED_PLOTS = [
     'experiment', 'run_id_y', 'run_id_x' 'extra_logs', 'out_dir', 'resume',  'title',
     '_experiment_parameters.env', 'run_name', 'cfg_dir', 'extra_logs', "duration", "run_id_x",
 ]
+
+
+def get_title(title: str):
+    title = title.replace("MiniGrid-", "")
+    title = re.sub("-v\d+", "", title)
+    return title
 
 
 def extract_name(s):
@@ -99,7 +106,8 @@ def get_out_dir(experiment_path, new_out_dir=False):
         import re
         out = glob.glob(f"{experiment_path}/analysis_*")
         if len(out) > 0:
-            last_idx = max([int(re.match(".*/analysis_(\d+).*", x).group(1)) for x in out])
+            last_idx = max([int(re.match(".*/analysis_(\d+).*", x).group(1)) for x in out
+                            if re.match(".*/analysis_(\d+).*", x)])
         else:
             last_idx = 0
         save_path = os.path.join(experiment_path, f"analysis_{last_idx+1}")
@@ -114,16 +122,21 @@ def plot_experiment(experiment_path,
                     x_axis="frames", plot_type="simple", kind="scatter", plot_data=None,
                     main_groupby="main.env", groupby_clm="env_cfg.max_episode_steps",
                     color_by="env_cfg.max_episode_steps",
-                    show_legend=False, simple=True,
-                    rolling_window=None, weights_cl="ep_completed",
+                    show_legend=False, simple=False,
+                    rolling_window=None, weights_cl="ep_completed", save_max_w=True,
                     new_out_dir=False,
                     max_frames=None,
                     melt_data=None,
-                    filter_by=None, filter_value=None):
+                    filter_by=None, filter_value=None,
+                    sub_plots_squed=0):
     """
     :param plot_type: [simple, error_bar, color]
     :param rolling_window: Used for error_bar kind
     """
+
+    hack_7_plots = True
+    if hack_7_plots:
+        sub_plots_squed = 1
 
     # ==============================================================================================
 
@@ -134,6 +147,8 @@ def plot_experiment(experiment_path,
 
     # Get experiment data
     data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+
+    df[groupby_clm] = df[groupby_clm].apply(lambda x: str(x))
 
     # ==============================================================================================
     # -- FILTER VALUES
@@ -152,6 +167,8 @@ def plot_experiment(experiment_path,
     else:
         print("NO FILTER APPLIED")
 
+    # df = df[df["main.env"] != "MiniGrid-Dynamic-Obstacles-16x16-v0"] # TODO default: w/o
+
     # ==============================================================================================
     # -- SPECIAL MELT data
     if melt_data:
@@ -162,7 +179,6 @@ def plot_experiment(experiment_path,
         df = pd.melt(df, id_vars=id_vars, var_name="Melt_type", value_name="Melt_value")
 
     # ==============================================================================================
-
     # For each subplot
     experiments_group = df.groupby(main_groupby, sort=False)
 
@@ -193,12 +209,16 @@ def plot_experiment(experiment_path,
     # Custom
     
     export_max_window = True
+    compare_mthd = np.greater if save_max_w else np.less
     export_data = dict()
 
     # ==============================================================================================
 
     size = int(pow(experiments_group.ngroups, 1/2))+1
 
+    w_size = size + sub_plots_squed
+    h_size = size - sub_plots_squed
+    print(w_size, h_size)
     for plot_f in plot_data:
         print(f"Plotting data {plot_f} ...")
 
@@ -212,13 +232,28 @@ def plot_experiment(experiment_path,
             print(f"Experiment name: {experiment_name}")
 
             # create subplot axes in a 3x3 grid
-            ax = plt.subplot(size, size, i + 1, sharex=share_ax, sharey=share_ay)  # n rows, n cols,
+            ax = plt.subplot(h_size, w_size, i + 1, sharex=share_ax, sharey=share_ay)  # n rows,
+            # n cols,
             # axes position
             if share_ax is None:
                 share_ax = ax
             if share_ax is None:
                 share_ay = ax
             export_data[plot_f][experiment_name] = dict()
+
+            # ======================================================================================
+
+            if i % w_size == 0:
+                ax.set_ylabel(plot_f)  # TODO default: plot_f
+                # ax.set_ylabel("Fraction")
+            if i >= w_size * (h_size - 1):
+                ax.set_xlabel(x_axis)
+
+            # Set the title
+            if simple:
+                ax.set_title(exp_gdf.iloc[0].title[13:-3])
+            else:
+                ax.set_title(get_title(experiment_name))
 
             # ======================================================================================
 
@@ -229,7 +264,7 @@ def plot_experiment(experiment_path,
 
                     export_data[plot_f][experiment_name][sub_group_name] = dict()
                     crd_dict = export_data[plot_f][experiment_name][sub_group_name]
-                    max_mean = - np.inf
+                    max_mean = -np.inf if save_max_w else np.inf
 
                     try:
                         assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
@@ -261,13 +296,14 @@ def plot_experiment(experiment_path,
                             means[idxs] = wmean
                             stds[idxs] = wstd
 
-                            if wmean > max_mean:
+                            if compare_mthd(wmean, max_mean):
                                 crd_dict["df"] = win
                                 max_mean = wmean
                     except:
                         print("Error!!!!!!!!!")
 
                     error_fill_plot(unique_x, means, stds, color=colors_map[color_name], ax=ax)
+
             elif plot_type == "color":
                 for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
                     assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
@@ -280,12 +316,6 @@ def plot_experiment(experiment_path,
                 exp_gdf.groupby(groupby_clm).plot(x_axis, plot_f, ax=ax, legend=False, kind=kind)
             # ======================================================================================
 
-            # Set the title
-            if simple:
-                ax.set_title(exp_gdf.iloc[0].title[13:-3])
-            else:
-                ax.set_title(experiment_name)
-
             # set the aspect
             # adjustable datalim ensure that the plots have the same axes size
             # ax.set_aspect('equal', adjustable='datalim')
@@ -293,14 +323,32 @@ def plot_experiment(experiment_path,
 
         # ==========================================================================================
 
+        if hack_7_plots:
+            # TODO SO so ugly, dont't know why show axis does not work :(
+            ax = plt.subplot(h_size, w_size, 8, sharex=share_ax, sharey=share_ay)  # n rows,
+            ax.axis('off')
+
+        # ==========================================================================================
+
+        # ==========================================================================================
+
         if show_legend:
             plt.gcf().legend([legend_elements[x] for x in subgroup_titles], subgroup_titles,
                              loc="lower right")
 
-        plt.title(plot_f, fontsize=12, y=-0.50)
+        #  TODO default
+        plt.gcf().suptitle(f"{plot_f.capitalize()} colored by max_steps", fontsize=12) #, y=-0.50,
+        # plt.gcf().suptitle(f"Number of interactions colored by type", fontsize=12)  #, y=-0.50,
+        # plt.gcf().suptitle(f"Fraction of interactions colored by object type", fontsize=12)
+        # x=-0.2)
 
-        plt.tight_layout()
+        if hack_7_plots:
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        else:
+            plt.tight_layout()
+
         plt.subplots_adjust(wspace=0.15, hspace=0.35)
+
         plt.savefig(f"{save_path}/{plot_f}.png")
         plt.close()
 
@@ -324,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument('--rolling_window', type=int, default=None)
     parser.add_argument('--weights_cl', default="ep_completed")
     parser.add_argument('--same_dir', action='store_true')
+    parser.add_argument('--save_max_w', action='store_false')
 
     parser.add_argument('--max_frames', type=float, default=None)
     parser.add_argument('--melt_data',  nargs='+', default=None)
@@ -339,5 +388,6 @@ if __name__ == "__main__":
                     show_legend=(not args.no_legend), rolling_window=args.rolling_window,
                     weights_cl=args.weights_cl, new_out_dir=(not args.same_dir),
                     max_frames=args.max_frames, melt_data=args.melt_data,
-                    filter_by=args.filter_by, filter_value=args.filter_value)
+                    filter_by=args.filter_by, filter_value=args.filter_value,
+                    save_max_w=args.save_max_w)
 

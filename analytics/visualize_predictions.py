@@ -526,7 +526,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     export_all_experiences_as_img(args.path)
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     if args.exp:
         play_experience(args.path, args.env_id, build_website=args.website)
     else:
