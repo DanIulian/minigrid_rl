@@ -82,7 +82,7 @@ class RecordingBehaviour(Wrapper):
         self.agent_orient = np.zeros(self.env.max_steps + 1)
         self.full_states = np.zeros((self.env.max_steps + 1, self.env.width, self.env.height, 3))
 
-        self.agent_pos[self.env.step_count] = np.array(self.env.start_pos)
+        self.agent_pos[self.env.step_count] = np.array(self.env.agent_pos)
         self.agent_orient[self.env.step_count] = np.array(self.env.start_dir)
 
         return self.env.reset(**kwargs)
@@ -362,7 +362,7 @@ class RecordPosition(Wrapper):
 
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
-        obs["position"] = np.array(self.env.unwrapped.start_pos)
+        obs["position"] = np.array(self.env.unwrapped.agent_pos)
 
         return obs
 
