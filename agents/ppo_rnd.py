@@ -355,6 +355,7 @@ class PPORND(TwoValueHeadsBase):
         # -- Calculate intrinsic & Normalize intrinsic rewards
         int_rew = diff_pred.detach().mean(1)
 
+        # TODO BIG BIG BUG - :( it is (self.num_procs, self.num_frames_per_proc,)
         dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
 
         # Normalize intrinsic reward
