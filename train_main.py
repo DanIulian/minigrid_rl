@@ -177,7 +177,7 @@ def run(full_args: Namespace) -> None:
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
     normalize_img = full_args.env_cfg.normalize
-    permute = full_args.env_cfg.permute
+    permute = getattr(full_args.env_cfg, "permute", False)
     obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
                                                              model_dir,
                                                              max_image_value=max_image_value,
@@ -225,7 +225,7 @@ def run(full_args: Namespace) -> None:
                           use_memory=model_args.mem, use_text=model_args.text)
         logger.info(f"Model [{model_args.name}] successfully created\n")
 
-        # Print Model info
+         # Print Model info
         logger.info("{}\n".format(model))
 
     if torch.cuda.is_available():
