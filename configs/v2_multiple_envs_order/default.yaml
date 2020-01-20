@@ -16,11 +16,11 @@ main:
 
 env_cfg:
   max_episode_steps: 400 # environment steps
-  max_image_value: 255. # 15.
+  max_image_value: 15. # 15.
   normalize: true
   wrapper: [full_state_train] # [include_position, get_interactions, occupancy_stats]
   no_eval_envs: 2
-  permute: true
+  permute: false
 
 agent:
   name: PPOOrder
@@ -53,8 +53,8 @@ model:
   min_mem: *min_mem
   text: *text
   memory_type: GRU
-  kernel_sizes: &kernel_sizes [5, 3, 3]  # [3, 2, 2]
-  strides: &strides [3, 2, 2]  # [1, 1, 1]
+  kernel_sizes: &kernel_sizes [3, 3, 2]  # [3, 2, 2]
+  strides: &strides [1, 1, 1]  # [1, 1, 1]
   use_memory: true
   order_model:
     ntoken_out: 7
