@@ -13,13 +13,15 @@ import gym
 import utils
 
 
-def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., normalize=True):
+def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                          permute=False):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
 
         vocab = Vocabulary(model_dir, obs_space["text"])
-        def preprocess_obss(obss, device=None):
+
+        def preprocess_obss(obss, device=None, permute=permute):
             return torch_rl.DictList({
                 "image": preprocess_images([obs["image"] for obs in obss], device=device,
                                            max_image_value=max_image_value, normalize=normalize),
@@ -41,12 +43,15 @@ def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., nor
 
     return obs_space, preprocess_obss
 
-def preprocess_images(images, device=None, max_image_value=15., normalize=True):
+
+def preprocess_images(images, device=None, max_image_value=15., normalize=True, permute=False):
     # Bug of Pytorch: very slow if not first converted to numpy array
     images = numpy.array(images)
     images = torch.tensor(images, device=device, dtype=torch.float)
     if normalize:
         images.div_(max_image_value)
+    if permute:
+        images = images.permute(0, 3, 1, 2)
     return images
 
 def preprocess_texts(texts, vocab, device=None):

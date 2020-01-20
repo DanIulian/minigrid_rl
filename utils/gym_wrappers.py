@@ -24,7 +24,7 @@ def include_full_state(env):
 
 
 def full_state_train(env):
-    return RGBImgObsWrapper(env)
+    return RGBImgObsWrapper(env, tile_size=6)
 
 
 def get_action_bonus_only(env):

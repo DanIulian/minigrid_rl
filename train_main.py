@@ -177,10 +177,12 @@ def run(full_args: Namespace) -> None:
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
     normalize_img = full_args.env_cfg.normalize
+    permute = full_args.env_cfg.permute
     obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
                                                              model_dir,
                                                              max_image_value=max_image_value,
-                                                             normalize=normalize_img)
+                                                             normalize=normalize_img,
+                                                             permute=permute)
 
     first_obs = first_env.reset()
     if "state" in first_obs:

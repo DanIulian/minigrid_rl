@@ -344,7 +344,7 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         dst_intrinsic_r = dst_intrinsic_r.contiguous().view(-1)
         dst_intrinsic_r[valid_mask] = scores
         dst_intrinsic_r = dst_intrinsic_r.view([self.num_procs, self.num_frames_per_proc])
-        dst_intrinsic_r = dst_intrinsic_r.transpose(0, 1)
+        dst_intrinsic_r = dst_intrinsic_r.transpose(0, 1).detach()
 
         # ==========================================================================================
 
@@ -358,7 +358,7 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         # int_rew = diff_pred.detach().mean(1)
         #
         # dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
-        #
+
         # Normalize intrinsic reward
         self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
@@ -371,6 +371,7 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
         dst_intrinsic_r = dst_intrinsic_r.transpose(0, 1)
+
         return dst_intrinsic_r
 
 

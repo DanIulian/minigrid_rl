@@ -68,27 +68,29 @@ class OrderPolicyModel(nn.Module, torch_rl.RecurrentACModel):
         self.memory_type = memory_type = cfg.memory_type
         hidden_size = getattr(cfg, "hidden_size", 128)
         self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
+        kernel_sizes = getattr(cfg, "kernel_sizes", [5, 3, 3])
+        strides = getattr(cfg, "strides", [3, 2, 2])
 
         # Decide which components are enabled
         self.use_text = use_text
         self.use_memory = use_memory
 
-        #experiments used model
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (3, 3)),
+            nn.Conv2d(3, 16, kernel_sizes[0], strides[0]),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, (2, 2)),
+            nn.Conv2d(16, 32, kernel_sizes[1], strides[1]),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, (2, 2)),
+            nn.Conv2d(32, 64, kernel_sizes[2], strides[2]),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
         n = obs_space["image"][0]
         m = obs_space["image"][1]
+        c = obs_space["image"][2]
 
-        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
+        self.image_embedding_size = int(np.prod(self.image_conv(torch.rand(1, c, n, m)).size()))
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
@@ -118,12 +120,12 @@ class OrderPolicyModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.fc2_val = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         self.fc2_act = nn.Sequential(
             nn.Linear(self.embedding_size, memory_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         # Define heads
@@ -183,19 +185,22 @@ class OrderPolicyModel(nn.Module, torch_rl.RecurrentACModel):
 
 
 class OrderVisualEncoder(nn.Module):
-    def __init__(self, in_size, out_size):
+    def __init__(self, cfg, in_size, out_size):
         super(OrderVisualEncoder, self).__init__()
 
         assert len(in_size) == 3, "Visual encoder len(in_size) != 3"
         assert len(out_size) == 1, "Visual encoder len(out_size) != 1"
 
+        kernel_sizes = getattr(cfg, "kernel_sizes", [5, 3, 3])
+        strides = getattr(cfg, "strides", [3, 2, 2])
+
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, 3, 1),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, 3, 1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 2, 1),
-            nn.ReLU()
+            nn.Conv2d(3, 16, kernel_sizes[0], strides[0]),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 32, kernel_sizes[1], strides[1]),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_sizes[2], strides[2]),
+            nn.ReLU(inplace=True)
         )
         out_conv_size = self.image_conv(torch.rand([1] + in_size)).size()
 
@@ -208,11 +213,37 @@ class OrderVisualEncoder(nn.Module):
         return x
 
 
+def get_shuffled_sequence(sequence: torch.Tensor):
+    device = sequence.device
+    seq_len = sequence.size(1)
+    seq_shape = sequence.size()
+
+    # Get indexes to shuffle
+    rand = torch.rand(sequence.size()[:2])
+    batch_rand_perm = rand.argsort(dim=1).to(device)
+
+    # Generate correct order
+    ordered = torch.arange(seq_len).to(device).unsqueeze(0).expand_as(batch_rand_perm)
+    target_order = torch.zeros_like(ordered).to(device)
+    target_order.scatter_(1, batch_rand_perm, ordered)
+
+    batch_rand_perm = batch_rand_perm[(...,) + (None,) * (len(seq_shape) - 2)].expand_as(sequence)
+    shuffled_seq = sequence.gather(1, batch_rand_perm)
+    return shuffled_seq, target_order
+
+
 class OrderingModel(nn.Module):
     def __init__(self, cfg: Namespace, obs_space):
         super(OrderingModel, self).__init__()
 
-        self.order_network = OrderNetwork(cfg.order_model, obs_space, cfg.ntoken_out,
+        self.order_samples_eval = cfg.order_model.eval_samples
+        self.train_batches_per_epoch = cfg.order_model.train_batches_per_epoch
+        self.ntoken_out = cfg.order_model.ntoken_out
+        self.max_eval_bath = cfg.order_model.max_eval_bath
+
+        self.seq_len = self.ntoken_out - 1
+
+        self.order_network = OrderNetwork(cfg.order_model, obs_space, cfg.order_model.ntoken_out,
                                           transform_obs=None)
         self.order_memory = OrderStorage(cfg.order_memory, obs_space, transform=None)
 
@@ -221,22 +252,36 @@ class OrderingModel(nn.Module):
         self.optimizer = getattr(torch.optim, cfg.order_model.optimizer)(
             self.order_network.parameters(), **optimizer_args)
 
-    def get_sequences(self, *args, **kwargs):
-        return self.order_memory.get_sequences(*args, **kwargs)
+        self.tgt_mask = None
+        self.criterion_eval = nn.CrossEntropyLoss(reduction="none")
+        self.criterion_train = nn.CrossEntropyLoss()
+
+    def get_sequences(self, obs1d: torch.Tensor, mask1d: torch.Tensor):
+        # Index mask for last element in sequence
+
+        seq_len = self.seq_len
+
+        n = len(obs1d) - seq_len
+        obs_seq = torch.stack([obs1d[i:(n+i+1)] for i in range(seq_len)]).transpose(0, 1)
+        mask_seq = torch.stack([mask1d[i:(n+i+1)] for i in range(seq_len)]).transpose(0, 1)
+
+        same_ep = mask_seq[:, 1:].sum(dim=1) == (seq_len - 1)
+        sequences = obs_seq[same_ep]
+
+        last_null = torch.zeros(seq_len-1).to(same_ep.device).bool()
+        same_ep = torch.cat([last_null, same_ep])
+        return sequences, same_ep
 
     def add_seq_to_mem(self, *args, **kwargs):
         return self.order_memory.add_seq_to_mem(*args, **kwargs)
 
-    def eval_sequences(self, *args, **kwargs):
-        return self.order_network.eval_sequences(*args, **kwargs)
-
     def train_order(self, device="cpu"):
         optimizer = self.optimizer
         model = self.order_network
-        ntokens_out = model.ntoken_out
+        ntokens_out = self.ntoken_out
 
-        dataloader = self.order_memory.dataloader
-        max_batches = model.train_batches_per_epoch
+        dataloader = self.order_memory.dataloader()
+        max_batches = self.train_batches_per_epoch
 
         criterion = nn.CrossEntropyLoss()
         model.train()  # Turn on the train mode
@@ -273,6 +318,64 @@ class OrderingModel(nn.Module):
 
         return total_loss / batch
 
+    def eval_sequences(self, seq: torch.Tensor):
+        num_samples = self.order_samples_eval
+        seq_cnt = seq.size(0)
+        seq_shape = seq.size()
+        seq_len = self.seq_len
+        b_size = self.max_eval_bath
+        model = self.order_network
+
+        # Expand sequence to number of samples Batch x seq_len x img_dim ...
+        seq = seq.unsqueeze(1).expand((seq_cnt, num_samples) + seq_shape[1:]).contiguous()
+        seq = seq.view((-1, ) + seq_shape[1:])
+
+        # Get indexes & shuffled list to shuffle
+        shuffled_seq, target_order = get_shuffled_sequence(seq)
+        criterion = self.criterion_eval
+
+        model.eval()
+
+        with torch.no_grad():
+            all_scores = []
+            for i in range(0, shuffled_seq.size(0), b_size):
+
+                scores = self.get_data_loss(shuffled_seq[i: i+b_size], target_order[i: i+b_size],
+                                            criterion)
+
+                all_scores.append(scores)
+
+            scores = torch.cat(all_scores, dim=0).view(seq_cnt, num_samples, seq_len)
+
+        return scores.mean(dim=1)
+
+    def get_data_loss(self, data, target, criterion):
+        ntoken_out = self.ntoken_out
+        device = data.device
+
+        # -> change to shape S x B
+        data, target = data.transpose(0, 1).contiguous(), target.transpose(0, 1).contiguous()
+
+        if self.tgt_mask is None or self.tgt_mask.size(0) != ntoken_out - 1:
+            tgt_mask = self.order_network._generate_square_subsequent_mask(ntoken_out - 1)
+            tgt_mask = tgt_mask.to(device)
+            self.tgt_mask = tgt_mask
+
+        tgt_mask = self.tgt_mask
+
+        # Modify targets for input - Shift to the right and pad with Empty Token (max)
+        in_target = target.clone()
+        in_target[1:, :] = target[:-1, :]
+        in_target[0, :] = ntoken_out - 1
+
+        output = self.order_network(data, in_target, tgt_mask=tgt_mask)
+
+        loss = criterion(output.view(-1, ntoken_out - 1), target.view(-1))
+        if len(loss.size()) != 0:
+            loss = loss.view(target.size()).transpose(0, 1)
+
+        return loss
+
 
 class OrderNetwork(nn.Module):
 
@@ -284,9 +387,7 @@ class OrderNetwork(nn.Module):
         nhid = opts.nhid
         nlayers = opts.nlayers
         dropout = opts.dropout
-        self.order_samples_eval = opts.eval_samples
         self.ntoken_out = ntoken_out
-        self.train_batches_per_epoch = opts.train_batches_per_epoch
 
         self.model_type = 'Transformer'
         self.transform = transform_obs
@@ -299,7 +400,7 @@ class OrderNetwork(nn.Module):
         decoder_layers = TransformerDecoderLayer(ninp, nhead, nhid, dropout)
         self.transformer_decoder = TransformerDecoder(decoder_layers, nlayers)
 
-        self.encoder_encoder = OrderVisualEncoder(in_size, (ninp, ))
+        self.encoder_encoder = OrderVisualEncoder(opts, in_size, (ninp, ))
         self.encoder_decoder = nn.Embedding(ntoken_out, ninp)
 
         self.ninp = ninp
@@ -350,68 +451,6 @@ class OrderNetwork(nn.Module):
         output = self.decoder(output)
         return output
 
-    def eval_sequences(self, seq):
-        with torch.no_grad():
-            samples_eval = self.order_samples_eval
-            shuffle_seq = self.get_shuffle_seq
-            seq_cnt = seq.size(0)
-            ntoken_out = self.ntoken_out
-
-            sample_seq = []
-            sample_seq_order = []
-
-            # TODO UGLY No Parallel computing !!!! :(
-            for i in range(seq_cnt):
-                for _ in range(samples_eval):
-                    s, so = shuffle_seq(seq[i])
-
-                    sample_seq.append(s)
-                    sample_seq_order.append(so)
-
-            all_sample_seq = torch.stack(sample_seq)
-            all_sample_seq_order = torch.stack(sample_seq_order)
-
-            scores = self.eval_data(all_sample_seq, all_sample_seq_order)
-            scores = scores.view(seq_cnt, samples_eval, ntoken_out - 1)
-        return scores.mean(dim=1)
-
-    def eval_data(self, data, target):
-        ntoken_out = self.ntoken_out
-        device = data.device
-        criterion = self.eval_criterion
-
-        # -> change to shape S x B
-        data, target = data.transpose(0, 1).contiguous(), target.transpose(0, 1).contiguous()
-
-        # TODO Can do better than this! do not have to genarate this every time
-        tgt_mask = self._generate_square_subsequent_mask(ntoken_out - 1).to(device)
-
-        # Modify targets for input - Shift to the right and pad with Empty Token (max)
-        in_target = target.clone()
-        in_target[1:, :] = target[:-1, :]
-        in_target[0, :] = ntoken_out - 1
-
-        output = self(data, in_target, tgt_mask=tgt_mask)
-
-        loss = criterion(output.view(-1, ntoken_out - 1), target.view(-1))
-
-        return loss
-
-    def get_shuffle_seq(self, seq):
-        seq_len = seq.size(0)
-
-        seq_order = torch.randperm(seq_len)
-        seq = seq[seq_order]
-
-        act_seq_order = torch.zeros_like(seq_order)
-        act_seq_order[seq_order] = torch.arange(seq_len)
-        seq = seq.float()
-
-        if self.transform:
-            seq = self.transform(seq)
-
-        return seq, act_seq_order.to(seq.device)
-
 
 class OrderStorage(Dataset):
     """Shuffle the order of numbers"""
@@ -422,7 +461,6 @@ class OrderStorage(Dataset):
         experience_offset = cfg.experience_offset
         memory_size = cfg.memory_size
         self.batch_size = cfg.batch_size
-        self.num_workers = cfg.num_workers
 
         assert (batch_seq_len - 1) == experience_offset, f"Incorrect offset experience_offset " \
                                                          f"should be batch_seq_len - 1 " \
@@ -441,14 +479,20 @@ class OrderStorage(Dataset):
 
         assert len(img_shape) == 3, "Image shape is not 3 dimensional"
 
-    @property
-    def dataloader(self):
+    def dataloader(self, device=None):
         # Should fix this, overhead for creating dataloader each time
         batch_size = self.batch_size
-        num_workers = self.num_workers
-        dataloader = DataLoader(self, batch_size=batch_size, shuffle=True,
-                                num_workers=num_workers)
-        return dataloader
+        idxs = torch.randperm(len(self))
+        exp = self.exp
+        device = exp.device if device is None else device
+
+        for i in range(0, idxs.size(0), batch_size):
+            batch = exp[idxs[i: i + batch_size]].to()
+            shuffled_seq, target_order = get_shuffled_sequence(batch)
+
+            if self.transform:
+                raise NotImplemented
+            yield shuffled_seq, target_order
 
     def __len__(self):
         return self.exp.size(0) if self.full_memory else self.exp_pos
@@ -503,20 +547,6 @@ class OrderStorage(Dataset):
         else:
             self.exp_pos = exp_pos + no_seq
             exp[exp_pos: self.exp_pos] = sequences
-
-    def get_sequences(self, obs1d, mask1d):
-        seq_len = self.batch_seq_len
-
-        n = len(obs1d) - seq_len
-        obs_seq = torch.stack([obs1d[i:(n+i+1)] for i in range(seq_len)]).transpose(0, 1)
-        mask_seq = torch.stack([mask1d[i:(n+i+1)] for i in range(seq_len)]).transpose(0, 1)
-
-        same_ep = mask_seq[:, 1:].sum(dim=1) == (seq_len - 1)
-        sequences = obs_seq[same_ep]
-
-        last_null = torch.zeros(seq_len-1).to(same_ep.device).bool()
-        same_ep = torch.cat([same_ep, last_null])
-        return sequences, same_ep
 
     def __getitem__(self, idx):
         seq_len = self.batch_seq_len
