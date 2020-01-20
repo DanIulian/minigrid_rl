@@ -4,8 +4,10 @@ from . import model_worlds
 from . import model_worlds_separate
 from . import model_icm_like
 from . import model_prediction_error
+from . import model_theorder
 
 MODELS = {
+    "OrderModels": model_theorder.OrderModels,
     "RNDModel": model_rnd_like.RNDModels,
     "Model": model_replica.Model,
     "WorldsModels": model_worlds.WorldsModels,

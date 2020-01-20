@@ -11,6 +11,7 @@ import math
 import collections
 from gym_minigrid.minigrid import OBJECT_TO_IDX
 import cv2
+from gym_minigrid.wrappers import RGBImgObsWrapper
 
 try:
     import gym_minigrid
@@ -20,6 +21,10 @@ except ImportError:
 
 def include_full_state(env):
     return RecordFullState(env)
+
+
+def full_state_train(env):
+    return RGBImgObsWrapper(env)
 
 
 def get_action_bonus_only(env):

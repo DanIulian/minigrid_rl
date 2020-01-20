@@ -4,10 +4,12 @@ from . import ppo_worlds
 from . import ppo_worlds_separate
 from . import ppo_icm
 from . import ppo_prediction_error
+from . import ppo_theorder
 
 AGENTS = {
     "PPORND": ppo_rnd.PPORND,
     "PPO": ppo_replica.PPO,
+    "PPOOrder": ppo_theorder.PPOOrder,
     "PPOWorlds": ppo_worlds.PPOWorlds,
     "PPOWorldsSeparate": ppo_worlds_separate.PPOWorlds,
     "PPOIcm": ppo_icm.PPOIcm,
