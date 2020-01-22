@@ -298,7 +298,7 @@ class OrderingModel(nn.Module):
         if len(self.order_memory) < self.warm_up_seq_size:
             return 0
         else:
-            self.warm_up = True
+            self.warm_up = False
 
         optimizer = self.optimizer
         model = self.order_network
