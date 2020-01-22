@@ -324,11 +324,6 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         # obs_view = obs.view((self.num_procs, self.num_frames_per_proc) + obs.size()[1:])
         mask_view = exps.mask.view([self.num_procs, self.num_frames_per_proc])
 
-        data = {
-            "obs": obs.view((self.num_procs, self.num_frames_per_proc) + obs.size()[1:]),
-            "mask": mask_view
-        }
-
         mask_view = mask_view.clone()
         mask_view[:, 0] = 0  # Fake each proc to start with new episode, so we can unpack
         mask_view = mask_view.view(-1)
@@ -338,9 +333,6 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         # Add all valid seq to order memory
         self.acmodel.order_model.add_seq_to_mem(valid_sequences)
 
-        data["valid_seq"] = valid_sequences
-        data["valid_mask"] = valid_mask
-        torch.save(data, f"results/batch/batch_{self.batch_num}")
         # ==========================================================================================
         # Evaluate each sequence
 
