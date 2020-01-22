@@ -203,13 +203,29 @@ class OrderVisualEncoder(nn.Module):
             nn.ReLU(inplace=True)
         )
         out_conv_size = self.image_conv(torch.rand([1] + in_size)).size()
+        out_feat_size = int(np.prod(out_conv_size))
 
-        self.ln1 = nn.Linear(int(np.prod(out_conv_size)), out_size[0])
+        self.ln1 = nn.Sequential(
+            nn.Linear(out_feat_size, out_size[0]),
+            nn.BatchNorm1d(out_size[0], affine=True),
+            nn.ReLU(),
+        )
 
     def forward(self, x):
         x = self.image_conv(x)
         x = x.flatten(1)
         x = self.ln1(x)
+        return x
+
+
+class OneHotPositionalEncoding:
+    def __init__(self):
+        pass
+
+    def __call__(self, x):
+        seq_len = x.size(0)
+        y = torch.eye(seq_len).unsqueeze(1).expand(seq_len, x.size(1), seq_len).to(device=x.device)
+        x = torch.cat([x, y], dim=2)
         return x
 
 
@@ -240,6 +256,7 @@ class OrderingModel(nn.Module):
         self.train_batches_per_epoch = cfg.order_model.train_batches_per_epoch
         self.ntoken_out = cfg.order_model.ntoken_out
         self.max_eval_bath = cfg.order_model.max_eval_bath
+        self.warm_up_seq_size = cfg.order_model.warm_up_seq_size
 
         self.seq_len = self.ntoken_out - 1
 
@@ -253,6 +270,8 @@ class OrderingModel(nn.Module):
             self.order_network.parameters(), **optimizer_args)
 
         self.tgt_mask = None
+        self.warm_up = True
+
         self.criterion_eval = nn.CrossEntropyLoss(reduction="none")
         self.criterion_train = nn.CrossEntropyLoss()
 
@@ -276,19 +295,30 @@ class OrderingModel(nn.Module):
         return self.order_memory.add_seq_to_mem(*args, **kwargs)
 
     def train_order(self, device="cpu"):
+        if len(self.order_memory) < self.warm_up_seq_size:
+            return 0
+        else:
+            self.warm_up = True
+
         optimizer = self.optimizer
         model = self.order_network
         ntokens_out = self.ntoken_out
 
-        dataloader = self.order_memory.dataloader()
+        data_loader = self.order_memory.dataloader()
         max_batches = self.train_batches_per_epoch
 
         criterion = nn.CrossEntropyLoss()
         model.train()  # Turn on the train mode
         total_loss = 0.
-        cur_loss = 0.
 
-        for batch, (data, targets) in enumerate(dataloader):
+        batch = 0
+        while batch < max_batches:
+            next_item = next(data_loader, None)
+            if next_item:
+                data_loader = self.order_memory.dataloader()
+                next_item = next(data_loader, None)
+            data, targets = next_item
+
             data, targets = data.to(device), targets.to(device)
             data, targets = data.transpose(0, 1).contiguous(), targets.transpose(0, 1).contiguous()
             # -> change to shape S x B
@@ -313,8 +343,10 @@ class OrderingModel(nn.Module):
 
             total_loss += loss.item()
 
+            batch += 1
             if max_batches > max_batches:
                 break
+
 
         return total_loss / batch
 
@@ -387,12 +419,14 @@ class OrderNetwork(nn.Module):
         nhid = opts.nhid
         nlayers = opts.nlayers
         dropout = opts.dropout
+        seq_len = ntoken_out - 1
+
         self.ntoken_out = ntoken_out
 
         self.model_type = 'Transformer'
         self.transform = transform_obs
         self.src_mask = None
-        self.pos_encoder = PositionalEncoding(ninp, dropout)
+        self.pos_encoder = OneHotPositionalEncoding()
 
         encoder_layers = TransformerEncoderLayer(ninp, nhead, nhid, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
@@ -400,11 +434,11 @@ class OrderNetwork(nn.Module):
         decoder_layers = TransformerDecoderLayer(ninp, nhead, nhid, dropout)
         self.transformer_decoder = TransformerDecoder(decoder_layers, nlayers)
 
-        self.encoder_encoder = OrderVisualEncoder(opts, in_size, (ninp, ))
+        self.encoder_encoder = OrderVisualEncoder(opts, in_size, (ninp - seq_len, ))
         self.encoder_decoder = nn.Embedding(ntoken_out, ninp)
 
         self.ninp = ninp
-        self.decoder = nn.Linear(ninp, ntoken_out-1)
+        self.decoder = nn.Linear(ninp, seq_len)
 
         self.init_weights()
 
@@ -431,19 +465,22 @@ class OrderNetwork(nn.Module):
         img_size = src.size()[2:]
 
         visual_embedding = self.encoder_encoder(src.view((-1, ) + img_size))
-
-        src = visual_embedding.view((seq_len, batch_size, -1)) * math.sqrt(self.ninp)
+        src = visual_embedding.view((seq_len, batch_size, -1))
         src = self.pos_encoder(src)
 
-        tgt = self.encoder_decoder(tgt) * math.sqrt(self.ninp)
-        tgt = self.pos_encoder(tgt)
+        # Transform to one hot encoding
+        tgt_shape = tgt.size()
+        tgt = tgt.view(-1)
+        tgt_one_hot = torch.zeros(tgt.size(0), self.ninp).to(device=tgt.device)
+        tgt_one_hot.scatter_(1, tgt.unsqueeze(1), 1)
+        tgt_one_hot = tgt_one_hot.view(seq_len, tgt_shape[1], self.ninp)
 
         memory = self.transformer_encoder(src, mask=src_mask,
                                           src_key_padding_mask=src_key_padding_mask)
 
         # tgt_mask = tgt_mask[:6, :6].unsqueeze(0).expand(len(src), 6, 6)
 
-        output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask,
+        output = self.transformer_decoder(tgt_one_hot, memory, tgt_mask=tgt_mask,
                                           memory_mask=memory_mask,
                                           tgt_key_padding_mask=tgt_key_padding_mask,
                                           memory_key_padding_mask=memory_key_padding_mask)
@@ -484,7 +521,6 @@ class OrderStorage(Dataset):
         batch_size = self.batch_size
         idxs = torch.randperm(len(self))
         exp = self.exp
-        device = exp.device if device is None else device
 
         for i in range(0, idxs.size(0), batch_size):
             batch = exp[idxs[i: i + batch_size]].to()

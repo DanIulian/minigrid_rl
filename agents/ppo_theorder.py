@@ -73,6 +73,7 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
 
         self.batch_num = 0
 
+        self.obs_rms = None
         if self.running_norm_obs:
             self.collect_random_statistics(50)
 
@@ -241,8 +242,9 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         """
         # TODO Select only indexes from [0: train_frames_per_proc]
         if self.train_indexes is None:
+            pad = self.num_frames_per_proc - self.train_frames_per_proc
             indexes = numpy.arange(0, self.num_frames, self.recurrence)
-            select = (indexes % self.num_frames_per_proc) < self.train_frames_per_proc
+            select = (indexes % self.num_frames_per_proc) >= pad
             self.train_indexes = indexes[select]
 
         indexes = self.train_indexes
@@ -322,6 +324,11 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         # obs_view = obs.view((self.num_procs, self.num_frames_per_proc) + obs.size()[1:])
         mask_view = exps.mask.view([self.num_procs, self.num_frames_per_proc])
 
+        data = {
+            "obs": obs.view((self.num_procs, self.num_frames_per_proc) + obs.size()[1:]),
+            "mask": mask_view
+        }
+
         mask_view = mask_view.clone()
         mask_view[:, 0] = 0  # Fake each proc to start with new episode, so we can unpack
         mask_view = mask_view.view(-1)
@@ -331,8 +338,15 @@ class PPOOrder(TwoValueHeadsBaseGeneralOffset):
         # Add all valid seq to order memory
         self.acmodel.order_model.add_seq_to_mem(valid_sequences)
 
+        data["valid_seq"] = valid_sequences
+        data["valid_mask"] = valid_mask
+        torch.save(data, f"results/batch/batch_{self.batch_num}")
         # ==========================================================================================
         # Evaluate each sequence
+
+        if self.acmodel.order_model.warm_up:
+            dst_intrinsic_r.zero_()
+            return dst_intrinsic_r
 
         self.acmodel.order_model.eval()
 

@@ -53,29 +53,31 @@ model:
   min_mem: *min_mem
   text: *text
   memory_type: GRU
-  kernel_sizes: &kernel_sizes [3, 3, 2]  # [3, 2, 2]
+  kernel_sizes: &kernel_sizes [3, 3, 3]  # [3, 2, 2]
   strides: &strides [1, 1, 1]  # [1, 1, 1]
   use_memory: true
   order_model:
     ntoken_out: 7
-    emsize: 256  # embedding dimension input
-    nhid: 256  # the dimension of the feed forward network model in nn.TransformerEncoder
-    nlayers: 4  # the number of nn.TransformerEncoderLayer in nn.TransformerEncoder
-    nhead: 4  # the number of heads in the multihead attention models
+    emsize: 128  # embedding dimension input
+    nhid: 128  # the dimension of the feed forward network model in nn.TransformerEncoder
+    nlayers: 2  # the number of nn.TransformerEncoderLayer in nn.TransformerEncoder
+    nhead: 2  # the number of heads in the multihead attention models
     dropout: 0.0  # the dropout value
     kernel_sizes: *kernel_sizes
     strides: *strides
+    clip_grad: 0.5  # Not used yet
     optimizer: Adam
     optimizer_args:
-      lr: 0.001
+      lr: 0.00003
     eval_samples: 1
-    train_batches_per_epoch: 10
+    train_batches_per_epoch: 1000
     max_eval_bath: 128
+    warm_up_seq_size: 30720
 
   order_memory:
     batch_seq_len: 6
     experience_offset: *experience_offset
-    memory_size: 10000
+    memory_size: 40960
     batch_size: 128
 
 extra_logs: [
