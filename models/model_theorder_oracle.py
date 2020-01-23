@@ -257,9 +257,10 @@ class OrderingModel(nn.Module):
 
         oracle_cfg = Namespace()
         oracle_cfg.seq_len = self.seq_len
-        oracle_cfg.num_buffer_unique_obs = 10000
-        oracle_cfg.num_buffer_unique_seq = 10000
+        oracle_cfg.num_buffer_unique_obs = cfg.order_model.num_buffer_unique_obs
+        oracle_cfg.num_buffer_unique_seq = cfg.order_model.num_buffer_unique_seq
         oracle_cfg.obs_shape = obs_space
+        oracle_cfg.max_steps = cfg.order_model.max_steps
 
         self.order_oracle = OracleOrder(oracle_cfg)
 
@@ -314,7 +315,8 @@ class OrderingModel(nn.Module):
                 print("Seq or elem not in buffer")
             scores[i] = ret_score.to(device)
 
-        return -scores
+        # Normalize so as to always prefer the final reward
+        return - scores / self.max_steps
 
 
 class OracleOrder:
@@ -323,6 +325,8 @@ class OracleOrder:
         num_buffer_unique_obs = cfg.num_buffer_unique_obs
         num_buffer_unique_seq = cfg.num_buffer_unique_seq
         obs_shape = cfg.obs_shape
+
+        self.max_steps = cfg.max_steps
 
         self.unique_obs_buffer = torch.zeros((num_buffer_unique_obs,) + obs_shape)
         self.unique_obs_buffer.fill_(-1)
