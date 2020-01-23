@@ -5,5 +5,3 @@ main:
         "MiniGrid-ObstructedMaze-2Dlh-v0", "MiniGrid-ObstructedMaze-1Q-v0",
         "MiniGrid-Dynamic-Obstacles-16x16-v0"
   ]
-env_cfg:
-  max_episode_steps: [200, 400, 600, 800, 1000, 1600] # environment steps

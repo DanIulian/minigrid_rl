@@ -5,9 +5,11 @@ from . import model_worlds_separate
 from . import model_icm_like
 from . import model_prediction_error
 from . import model_theorder
+from . import model_theorder_oracle
 
 MODELS = {
     "OrderModels": model_theorder.OrderModels,
+    "OrderModelsOracle": model_theorder_oracle.OrderModelsOracle,
     "RNDModel": model_rnd_like.RNDModels,
     "Model": model_replica.Model,
     "WorldsModels": model_worlds.WorldsModels,
