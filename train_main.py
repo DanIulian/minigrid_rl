@@ -56,6 +56,7 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
     env = gym.make(args.env)
     env.action_space.n = n_actions
     env.max_steps = full_args.env_cfg.max_episode_steps
+    env.unwrapped._env_proc_id = 0
     env = env_wrapper(env)
     env.seed(args.seed + 10000 * 0)
 
@@ -67,6 +68,7 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
             env = gym.make(args.env)
             env.action_space.n = n_actions
             env.max_steps = full_args.env_cfg.max_episode_steps
+            env.unwrapped._env_proc_id = i
             env = env_wrapper(env)
             env.seed(args.seed + 10000 * i)
 
@@ -77,7 +79,6 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
 
 
 def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
-
     basic_keys_format = \
         "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | " \
         "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "\
@@ -178,11 +179,13 @@ def run(full_args: Namespace) -> None:
     max_image_value = full_args.env_cfg.max_image_value
     normalize_img = full_args.env_cfg.normalize
     permute = getattr(full_args.env_cfg, "permute", False)
+    obss_preprocessor = getattr(full_args.env_cfg, "obss_preprocessor", None)
     obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
                                                              model_dir,
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img,
-                                                             permute=permute)
+                                                             permute=permute,
+                                                             type=obss_preprocessor)
 
     first_obs = first_env.reset()
     if "state" in first_obs:
