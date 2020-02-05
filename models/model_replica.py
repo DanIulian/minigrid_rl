@@ -6,7 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import torch_rl
-import gym
+from typing import Optional, Tuple
+
+import numpy as np
+
 
 from models.utils import initialize_parameters
 
@@ -24,16 +27,6 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         self.use_text = use_text
         self.use_memory = use_memory
 
-        # Define image embedding
-        #self.image_conv = nn.Sequential(
-        #    nn.Conv2d(3, 16, (2, 2)),
-        #    nn.ReLU(),
-        #    nn.Conv2d(16, 32, (2, 2)),
-        #    nn.ReLU(),
-        #    nn.Conv2d(32, 64, (2, 2)),
-        #    nn.ReLU()
-        #)
-
         # experiment used model
         self.image_conv = nn.Sequential(
             nn.Conv2d(3, 16, (3, 3)),
@@ -47,12 +40,13 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
             nn.ReLU(inplace=True)
         )
 
-
         n = obs_space["image"][0]
         m = obs_space["image"][1]
-        self.image_embedding_size = ((n - 2) - 2) * ((m - 2) - 2) * 64
 
-        #self.image_embedding_size = ((n - 1) - 2) * ((m - 1) - 2) * 64
+        out_conv_size = self.image_conv(torch.rand((1, obs_space["image"][2], n, m))).size()
+        out_feat_size = int(np.prod(out_conv_size))
+
+        self.image_embedding_size = out_feat_size
 
         self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
 
@@ -113,11 +107,11 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         if self.use_memory:
             if self.memory_type == "LSTM":
                 hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
-                hidden = self.memory_rnn(x, hidden)
+                hidden = self.memory_rnn(x, hidden)  # type: Tuple[torch.Tensor]
                 embedding = hidden[0]
                 memory = torch.cat(hidden, dim=1)
             else:
-                hidden = memory
+                hidden = memory  # type: Optional[torch.Tensor]
                 hidden = self.memory_rnn(x, hidden)
                 embedding = hidden
                 memory = hidden
