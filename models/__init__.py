@@ -6,9 +6,11 @@ from . import model_icm_like
 from . import model_prediction_error
 from . import model_theorder
 from . import model_theorder_oracle
+from . import model_conditioned
 
 MODELS = {
     "OrderModels": model_theorder.OrderModels,
+    "ModelConditioned": model_conditioned.ModelConditioned,
     "OrderModelsOracle": model_theorder_oracle.OrderModelsOracle,
     "RNDModel": model_rnd_like.RNDModels,
     "Model": model_replica.Model,
