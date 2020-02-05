@@ -354,9 +354,11 @@ class PPORND(TwoValueHeadsBase):
 
         # -- Calculate intrinsic & Normalize intrinsic rewards
         int_rew = diff_pred.detach().mean(1)
+        # TODO BIG BIG BUG previously  - :( int_rew  is (self.num_procs, self.num_frames_per_proc,)
+        # TODO this should fix it but should double check
+        int_rew = int_rew.view((self.num_procs, self.num_frames_per_proc)).transpose(0, 1)
 
-        # TODO BIG BIG BUG - :( it is (self.num_procs, self.num_frames_per_proc,)
-        dst_intrinsic_r.copy_(int_rew.view((self.num_frames_per_proc, self.num_procs)))
+        dst_intrinsic_r.copy_(int_rew)
 
         # Normalize intrinsic reward
         self.predictor_rff.reset()
