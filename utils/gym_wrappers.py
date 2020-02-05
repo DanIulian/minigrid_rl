@@ -51,6 +51,10 @@ def get_interactions(env):
     return GetImportantInteractions(env)
 
 
+def add_env_id(env):
+    return AddIDasText(env)
+
+
 def occupancy_stats(env):
     return OccupancyMap(env)
 
@@ -376,6 +380,26 @@ class RecordPosition(Wrapper):
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
         obs["position"] = np.array(self.env.unwrapped.agent_pos)
+
+        return obs
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
+
+
+class AddIDasText(Wrapper):
+    def __init__(self, env):
+        super(AddIDasText, self).__init__(env)
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        observation["mission"] = self.env.unwrapped._env_proc_id
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        obs["mission"] = self.env.unwrapped._env_proc_id
 
         return obs
 
