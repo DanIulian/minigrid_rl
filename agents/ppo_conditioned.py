@@ -82,7 +82,7 @@ class PPOConditioned(BaseAlgov2):
         exps.memory_other = torch.zeros_like(exps.memory)
         sss = exps.memory_other.size()
         exps.memory_other = exps.memory_other.unsqueeze(1).expand((sss[0], num_procs, sss[1]))
-
+        log_loss_divfs = []
         for epoch_no in range(self.epochs):
             # Initialize log values
 
@@ -123,28 +123,28 @@ class PPOConditioned(BaseAlgov2):
                     # Compute conditional
                     loss_divf = 0
 
-                    # other_dist, other_value = [None] * num_procs, [None] * num_procs
-                    # orig_obs_text = sb.obs.text.clone()
-                    #
-                    # for ipr in range(num_procs):
-                    #     sb.obs.text.fill_(ipr)
-                    #     # Compute loss
-                    #     if self.acmodel.recurrent:
-                    #         other_dist[ipr], other_value[ipr], memory_other[:, ipr] = \
-                    #             self.acmodel(sb.obs, memory_other[:, ipr] * sb.mask)
-                    #     else:
-                    #         other_dist[ipr], other_value[ipr] = self.acmodel(sb.obs)
-                    #
-                    # sb.obs.text = orig_obs_text
-                    #
-                    # divf = [divergence_crit(dist.logits, x.probs.detach()) for x in other_dist]
-                    # all_idx = orig_obs_text
-                    #
-                    # for ib in range(len(other_dist)):
-                    #     loss_divf += divf[ib][all_idx != ib].sum()
-                    # loss_divf /= len(other_dist)
-                    #
-                    # loss_divfs.append(loss_divf.item())
+                    other_dist, other_value = [None] * num_procs, [None] * num_procs
+                    orig_obs_text = sb.obs.text.clone()
+
+                    for ipr in range(num_procs):
+                        sb.obs.text.fill_(ipr)
+                        # Compute loss
+                        if self.acmodel.recurrent:
+                            other_dist[ipr], other_value[ipr], memory_other[:, ipr] = \
+                                self.acmodel(sb.obs, memory_other[:, ipr] * sb.mask)
+                        else:
+                            other_dist[ipr], other_value[ipr] = self.acmodel(sb.obs)
+
+                    sb.obs.text.copy_(orig_obs_text)
+
+                    divf = [divergence_crit(dist.logits, x.probs.detach()) for x in other_dist]
+                    all_idx = orig_obs_text
+
+                    for ib in range(len(other_dist)):
+                        loss_divf += divf[ib][all_idx != ib].sum()
+                    loss_divf /= len(other_dist)
+
+                    loss_divfs.append(loss_divf.item())
                     # ==============================================================================
 
                     entropy = dist.entropy().mean()
@@ -162,7 +162,7 @@ class PPOConditioned(BaseAlgov2):
                     loss = policy_loss - \
                            self.entropy_coef * entropy + \
                            self.value_loss_coef * value_loss \
-                           - loss_divf * 0.0
+                           - loss_divf * 0.0001
 
                     # Update batch values
 
@@ -200,10 +200,10 @@ class PPOConditioned(BaseAlgov2):
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm)
 
-            # print(numpy.mean(loss_divfs))
+            log_loss_divfs.append(numpy.mean(loss_divfs))
 
         # Log some values
-
+        print(log_loss_divfs)
         logs["entropy"] = numpy.mean(log_entropies)
         logs["value"] = numpy.mean(log_values)
         logs["policy_loss"] = numpy.mean(log_policy_losses)
