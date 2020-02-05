@@ -13,8 +13,82 @@ import gym
 import utils
 
 
-def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                          permute=False):
+def get_obss_preprocessor(*args, type=None, **kwargs):
+    if type is None:
+        return get_obss_preprocessor_simple(*args, **kwargs)
+    elif type == "conditional":
+        return get_obss_preprocessor_cond(*args, **kwargs)
+    elif type == "default":
+        return get_obss_preprocessor_default(*args, **kwargs)
+    else:
+        raise NotImplemented
+
+
+def get_obss_preprocessor_cond(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                               permute=False):
+    # Check if it is a MiniGrid environment
+    if re.match("MiniGrid-.*", env_id):
+        obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
+
+        vocab = Vocabulary(model_dir, obs_space["text"])
+
+        def preprocess_obss(obss, device=None, permute=permute):
+            return torch_rl.DictList({
+                "image": preprocess_images([obs["image"] for obs in obss], device=device,
+                                           max_image_value=max_image_value, normalize=normalize),
+                "text": torch.tensor([obs["mission"] for obs in obss], device=device)
+            })
+        preprocess_obss.vocab = vocab
+
+    # Check if the obs_space is of type Box([X, Y, 3])
+    elif isinstance(obs_space, gym.spaces.Box) and len(obs_space.shape) == 3\
+            and obs_space.shape[2] == 3:
+        obs_space = {"image": obs_space.shape}
+
+        def preprocess_obss(obss, device=None):
+            return torch_rl.DictList({
+                "image": preprocess_images(obss, device=device)
+            })
+
+    else:
+        raise ValueError("Unknown observation space: " + str(obs_space))
+
+    return obs_space, preprocess_obss
+
+
+def get_obss_preprocessor_simple(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                                 permute=False):
+    # Check if it is a MiniGrid environment
+    if re.match("MiniGrid-.*", env_id):
+        obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
+
+        vocab = Vocabulary(model_dir, obs_space["text"])
+
+        def preprocess_obss(obss, device=None, permute=permute):
+            return torch_rl.DictList({
+                "image": preprocess_images([obs["image"] for obs in obss], device=device,
+                                           max_image_value=max_image_value, normalize=normalize),
+            })
+        preprocess_obss.vocab = vocab
+
+    # Check if the obs_space is of type Box([X, Y, 3])
+    elif isinstance(obs_space, gym.spaces.Box) and len(obs_space.shape) == 3\
+            and obs_space.shape[2] == 3:
+        obs_space = {"image": obs_space.shape}
+
+        def preprocess_obss(obss, device=None):
+            return torch_rl.DictList({
+                "image": preprocess_images(obss, device=device)
+            })
+
+    else:
+        raise ValueError("Unknown observation space: " + str(obs_space))
+
+    return obs_space, preprocess_obss
+
+
+def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                               permute=False):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -30,7 +104,8 @@ def get_obss_preprocessor(env_id, obs_space, model_dir, max_image_value=15., nor
         preprocess_obss.vocab = vocab
 
     # Check if the obs_space is of type Box([X, Y, 3])
-    elif isinstance(obs_space, gym.spaces.Box) and len(obs_space.shape) == 3 and obs_space.shape[2] == 3:
+    elif isinstance(obs_space, gym.spaces.Box) and len(obs_space.shape) == 3 \
+            and obs_space.shape[2] == 3:
         obs_space = {"image": obs_space.shape}
 
         def preprocess_obss(obss, device=None):
@@ -53,6 +128,7 @@ def preprocess_images(images, device=None, max_image_value=15., normalize=True, 
     if permute:
         images = images.permute(0, 3, 1, 2)
     return images
+
 
 def preprocess_texts(texts, vocab, device=None):
     var_indexed_texts = []
