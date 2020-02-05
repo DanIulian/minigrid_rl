@@ -28,6 +28,14 @@ class PPO(BaseAlgov2):
         optimizer = getattr(cfg, "optimizer", "Adam")
         optimizer_args = getattr(cfg, "optimizer_args", {})
 
+        self.out_dir = getattr(cfg, "out_dir", None)
+        self.experience_dir = f"{self.out_dir}/exp"
+        self.save_experience = save_experience = False
+
+        if save_experience:
+            import os
+            os.mkdir(self.experience_dir)
+
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
@@ -52,8 +60,19 @@ class PPO(BaseAlgov2):
 
     def update_parameters(self):
         # Collect experiences
-
+        update = self.batch_num
         exps, logs = self.collect_experiences()
+
+        if self.save_experience:
+            experience = dict()
+            experience["logs"] = logs
+            experience["obs_image"] = exps.obs.image
+            experience["mask"] = exps.mask
+            experience["action"] = exps.action
+            experience["reward"] = exps.reward
+            experience["num_procs"] = self.num_procs
+            experience["frames_per_proc"] = self.num_frames_per_proc
+            torch.save(experience, f"{self.experience_dir}/exp_update_{update}")
 
         for epoch_no in range(self.epochs):
             # Initialize log values

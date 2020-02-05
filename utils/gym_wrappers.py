@@ -11,7 +11,7 @@ import math
 import collections
 from gym_minigrid.minigrid import OBJECT_TO_IDX
 import cv2
-from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper
+from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper
 
 try:
     import gym_minigrid
@@ -25,6 +25,10 @@ def include_full_state(env):
 
 def full_state_rgb_train(env):
     return RGBImgObsWrapper(env, tile_size=6)
+
+
+def partial_rgb_train(env):
+    return RGBImgPartialObsWrapper(env, tile_size=6)
 
 
 def full_state_train(env):
