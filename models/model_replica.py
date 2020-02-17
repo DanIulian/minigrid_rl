@@ -21,6 +21,9 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         # CFG Information
         self.memory_type = memory_type = cfg.memory_type
         hidden_size = getattr(cfg, "hidden_size", 128)
+        k_sizes = getattr(cfg, "k_sizes", [5, 5, 3])
+        s_sizes = getattr(cfg, "s_sizes", [3, 3, 1])
+
         self._memory_size = memory_size = getattr(cfg, "memory_size", 128)
 
         # Decide which components are enabled
@@ -29,13 +32,13 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
 
         # experiment used model
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, (3, 3)),
+            nn.Conv2d(3, 16, k_sizes[0], s_sizes[0]),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, (2, 2)),
+            nn.Conv2d(16, 32, k_sizes[1], s_sizes[1]),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, (2, 2)),
+            nn.Conv2d(32, 64, k_sizes[2], s_sizes[2]),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
@@ -48,7 +51,10 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
 
         self.image_embedding_size = out_feat_size
 
-        self.fc1 = nn.Linear(self.image_embedding_size, hidden_size)
+        self.fc1 = nn.Sequential(
+            nn.Linear(self.image_embedding_size, hidden_size),
+            # nn.ReLU(inplace=True),
+        )
 
         crt_size = hidden_size
 
