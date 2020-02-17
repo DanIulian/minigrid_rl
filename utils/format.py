@@ -20,6 +20,8 @@ def get_obss_preprocessor(*args, type=None, **kwargs):
         return get_obss_preprocessor_cond(*args, **kwargs)
     elif type == "default":
         return get_obss_preprocessor_default(*args, **kwargs)
+    elif type == "tensor":
+        return get_obss_preprocessor_tensor(*args, **kwargs)
     else:
         raise NotImplemented
 
@@ -119,9 +121,53 @@ def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=
     return obs_space, preprocess_obss
 
 
+def get_obss_preprocessor_tensor(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                               permute=False):
+    # Check if it is a MiniGrid environment
+    if re.match("MiniGrid-.*", env_id):
+        obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
+
+        vocab = Vocabulary(model_dir, obs_space["text"])
+
+        def preprocess_obss(obss, device=None, permute=permute):
+            return torch_rl.DictList({
+                "image": preprocess_images_tensor([obs["image"] for obs in obss], device=device,
+                                           max_image_value=max_image_value, normalize=normalize),
+                "text": preprocess_texts([obs["mission"] for obs in obss], vocab, device=device)
+            })
+        preprocess_obss.vocab = vocab
+
+    # Check if the obs_space is of type Box([X, Y, 3])
+    elif isinstance(obs_space, gym.spaces.Box) and len(obs_space.shape) == 3 \
+            and obs_space.shape[2] == 3:
+        obs_space = {"image": obs_space.shape}
+
+        def preprocess_obss(obss, device=None):
+            return torch_rl.DictList({
+                "image": preprocess_images_tensor(obss, device=device)
+            })
+
+    else:
+        raise ValueError("Unknown observation space: " + str(obs_space))
+
+    return obs_space, preprocess_obss
+
+
 def preprocess_images(images, device=None, max_image_value=15., normalize=True, permute=False):
     # Bug of Pytorch: very slow if not first converted to numpy array
     images = numpy.array(images)
+    images = torch.tensor(images, device=device, dtype=torch.float)
+    if normalize:
+        images.div_(max_image_value)
+    if permute:
+        images = images.permute(0, 3, 1, 2)
+    return images
+
+
+def preprocess_images_tensor(images, device=None, max_image_value=15., normalize=True,
+                            permute=False):
+    # Bug of Pytorch: very slow if not first converted to numpy array
+    images = torch.stack(images)
     images = torch.tensor(images, device=device, dtype=torch.float)
     if normalize:
         images.div_(max_image_value)

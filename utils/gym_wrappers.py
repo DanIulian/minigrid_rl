@@ -12,6 +12,7 @@ import collections
 from gym_minigrid.minigrid import OBJECT_TO_IDX
 import cv2
 from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper
+import torch
 
 try:
     import gym_minigrid
@@ -57,6 +58,42 @@ def add_env_id(env):
 
 def occupancy_stats(env):
     return OccupancyMap(env)
+
+
+def tensor_out(env):
+    return TensorOut(env)
+
+
+class TensorOut(gym.core.Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    def step(self, action):
+
+        obs, reward, done, info = self.env.step(action)
+        obs["image"] = torch.from_numpy(obs["image"])
+        return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        obs["image"] = torch.from_numpy(obs["image"])
+        return obs
+
+    def seed(self, seed=None):
+        self.unwrapped.seed(seed=seed)
+
+
+def rotate_img(img, cw=True):
+    if cw:
+        # rotate cw
+        out = cv2.transpose(img)
+        out = cv2.flip(out, flipCode=1)
+    else:
+        # rotate ccw
+        out = cv2.transpose(img)
+        out = cv2.flip(out, flipCode=0)
+    return out
 
 
 class RecordingBehaviour(Wrapper):
