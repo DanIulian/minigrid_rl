@@ -743,9 +743,6 @@ class PPOWorlds(TwoValueHeadsBaseGeneral):
         # Shift starting indexes by recurrence//2 half the time
         # TODO Check this ; Bad fix
         if recurrence is None:
-            if self.batch_num % 2 == 1:
-                indexes = indexes[(indexes + recurrence) % self.num_frames_per_proc != 0]
-                indexes += recurrence // 2
             self.batch_num += 1
 
         num_indexes = self.batch_size // recurrence

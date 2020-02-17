@@ -30,7 +30,7 @@ class PPO(BaseAlgov2):
 
         self.out_dir = getattr(cfg, "out_dir", None)
         self.experience_dir = f"{self.out_dir}/exp"
-        self.save_experience = save_experience = False
+        self.save_experience = save_experience = 0
 
         if save_experience:
             import os
@@ -63,13 +63,17 @@ class PPO(BaseAlgov2):
         update = self.batch_num
         exps, logs = self.collect_experiences()
 
-        if self.save_experience:
+        if self.save_experience > 0:
+            norm_value = 255
+            assert False, "Must set norm value"
+
+            nstep = self.save_experience * self.num_frames_per_proc
             experience = dict()
             experience["logs"] = logs
-            experience["obs_image"] = exps.obs.image
-            experience["mask"] = exps.mask
-            experience["action"] = exps.action
-            experience["reward"] = exps.reward
+            experience["obs_image"] = (exps.obs.image[:nstep].cpu() * norm_value).byte()
+            experience["mask"] = exps.mask[:nstep]
+            experience["action"] = exps.action[:nstep]
+            experience["reward"] = exps.reward[:nstep]
             experience["num_procs"] = self.num_procs
             experience["frames_per_proc"] = self.num_frames_per_proc
             torch.save(experience, f"{self.experience_dir}/exp_update_{update}")
@@ -188,9 +192,9 @@ class PPO(BaseAlgov2):
         indexes = numpy.random.permutation(indexes)
 
         # Shift starting indexes by self.recurrence//2 half the time
-        if self.batch_num % 2 == 1:
-            indexes = indexes[(indexes + self.recurrence) % self.num_frames_per_proc != 0]
-            indexes += self.recurrence // 2
+        # if self.batch_num % 2 == 1:
+        #     indexes = indexes[(indexes + self.recurrence) % self.num_frames_per_proc != 0]
+        #     indexes += self.recurrence // 2
         self.batch_num += 1
 
         num_indexes = self.batch_size // self.recurrence

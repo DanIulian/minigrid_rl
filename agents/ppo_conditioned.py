@@ -230,9 +230,6 @@ class PPOConditioned(BaseAlgov2):
         indexes = numpy.random.permutation(indexes)
 
         # Shift starting indexes by self.recurrence//2 half the time
-        if self.batch_num % 2 == 1:
-            indexes = indexes[(indexes + self.recurrence) % self.num_frames_per_proc != 0]
-            indexes += self.recurrence // 2
         self.batch_num += 1
 
         num_indexes = self.batch_size // self.recurrence
