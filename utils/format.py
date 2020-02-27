@@ -168,7 +168,7 @@ def preprocess_images_tensor(images, device=None, max_image_value=15., normalize
                             permute=False):
     # Bug of Pytorch: very slow if not first converted to numpy array
     images = torch.stack(images)
-    images = torch.tensor(images, device=device, dtype=torch.float)
+    images = images.to(device).float()
     if normalize:
         images.div_(max_image_value)
     if permute:

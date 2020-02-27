@@ -33,16 +33,16 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         # experiment used model
         self.image_conv = nn.Sequential(
             nn.Conv2d(3, 16, k_sizes[0], s_sizes[0]),
-            nn.BatchNorm2d(16),
+            # nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 32, k_sizes[1], s_sizes[1]),
-            nn.BatchNorm2d(32),
+            # nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, k_sizes[2], s_sizes[2]),
-            nn.BatchNorm2d(64),
+            # nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
-
+        print(f"OBS space {obs_space}")
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 

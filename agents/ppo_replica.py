@@ -64,8 +64,8 @@ class PPO(BaseAlgov2):
         exps, logs = self.collect_experiences()
 
         if self.save_experience > 0:
-            norm_value = 255
-            assert False, "Must set norm value"
+            norm_value = 255.
+            # assert False, "Must set norm value"
 
             nstep = self.save_experience * self.num_frames_per_proc
             experience = dict()
@@ -74,8 +74,9 @@ class PPO(BaseAlgov2):
             experience["mask"] = exps.mask[:nstep]
             experience["action"] = exps.action[:nstep]
             experience["reward"] = exps.reward[:nstep]
-            experience["num_procs"] = self.num_procs
+            experience["num_procs"] = self.save_experience
             experience["frames_per_proc"] = self.num_frames_per_proc
+            experience["norm_value"] = norm_value
             torch.save(experience, f"{self.experience_dir}/exp_update_{update}")
 
         for epoch_no in range(self.epochs):
