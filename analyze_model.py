@@ -1,23 +1,14 @@
-import torch
 import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-matplotlib.use('TkAgg')
-import sys
-from liftoff import parse_opts
 import os
 import glob
-import cv2
 import itertools
 import pandas as pd
 import re
 from typing import List
 
-from train_main import run as train_run
-
 
 """
-sys.argv = ['evaluate_model.py', '/media/andrei/CE04D7C504D7AF292/rl/minigrid_rl/results/2020Mar02-151641_vf_ppo-multiple-envss/0000_env_cfg.env_args.goal_rand_offset_0/0/cfg.yaml', '--session-id', '1']
+sys.argv = ['evaluate_model.py', '/media/andrei/CE04D7C504D7AF292/rl/minigrid_rl/results/2020Mar02-151641_vf_ppo-multiple-envss/0003_env_cfg.env_args.goal_rand_offset_3/0/cfg.yaml', '--session-id', '1']
 
 opts = parse_opts()
 """
@@ -27,15 +18,17 @@ DIR_NAMES = ["right", "down", "left", "up"]
 TOOLS = "hover,save,pan,box_zoom,reset,wheel_zoom"
 
 
-def img_view(img: np.ndarray, scale: int = 1, view: str = None):
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
-    if view:
-        cv2.imshow(view, img)
-    return img
-
-
 def run(opts):
+    import cv2
+    from train_main import run as train_run
+
+    def img_view(img: np.ndarray, scale: int = 1, view: str = None):
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
+        if view:
+            cv2.imshow(view, img)
+        return img
+
     algo, model, envs, saver = train_run(opts, return_models=True)
     device = algo.device
     orig_goal_rand_offset = getattr(opts.env_cfg.env_args, "goal_rand_offset", 0)
@@ -200,6 +193,9 @@ def plot_values(df_paths: List[str]):
         df_select = pd.DataFrame(df_new[(df_new.goal_x == goal[0]) & (df_new.goal_y == goal[1])])
         model_ids = plot_data["model_ids"]
 
+        df_select["prob"] = df_select["prob"].apply(lambda x: str([np.round(y, 3) for y in x]))
+        # print(df_select["prob"].iloc[0])
+        # df_select["prob"] =
         plots = []
         for direction in range(4):
             plot_min, plot_max = df_select.vpred.min(), df_select.vpred.max()
@@ -227,7 +223,7 @@ def plot_values(df_paths: List[str]):
                         y_range=y_range,
                         sizing_mode="scale_width",
                         id=f"exp_{exp_name}_dir_{direction}_model_{select_model_id}_goal_{goal}",
-                        tooltips=[('Value', '@vpred')])
+                        tooltips=[('Value', '@vpred'), ('prob', '@prob')])
 
             x_tick = np.copy(x_range)
             x_tick[goal[0]-1] += "_goal"
@@ -299,15 +295,19 @@ def plot_values(df_paths: List[str]):
     for w in [goal_x_slider, model_id_slider, select_exp,  goal_y_slider]:
         w.on_change('value', update_data)
 
+    some_info = Div(text="Hover for more info. Action probabilities prob[0-left, 1-right, "
+                         "2-forward, ...]")
+
     view_layout = column([select_exp, model_id_slider, goal_x_slider, goal_y_slider, cl_layout,
-                          plot_r])
+                          some_info, plot_r])
 
     curdoc().add_root(view_layout)
     curdoc().title = "4room experiments"
 
 
-# plot_values(["CD_ag_1.1_goal_5.5+0.npy", "CD_ag_1.1_goal_5.5+1.npy"])
-plot_values(["CD_ag_1.1_goal_5.5+1.npy"])
+plot_values(["CD_ag_1.1_goal_5.5+0.npy", "CD_ag_1.1_goal_5.5+1.npy", "CD_ag_1.1_goal_5.5+2.npy",
+             "CD_ag_1.1_goal_5.5+3.npy"])
+# plot_values(["CD_ag_1.1_goal_5.5+1.npy"])
 
 # if __name__ == "__main__":
 #     pass
