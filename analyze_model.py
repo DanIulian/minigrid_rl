@@ -183,6 +183,7 @@ def plot_values(df_paths: List[str]):
     from bokeh.models import CustomJS, Slider
     from bokeh.models.widgets import Select, Div, RadioGroup
     from bokeh.models import ColumnDataSource
+    from bokeh.models import Span
 
     experiments = dict()
     paths = dict()
@@ -320,6 +321,15 @@ def plot_values(df_paths: List[str]):
     reward_column = ColumnDataSource(data=get_ep_r(crt_exp))
     plot_r.line(x="ep", y="reward", source=reward_column)
 
+    loss_span = Span(
+        location=0,
+        dimension="height",
+        line_dash="4 4",
+        line_width=1,
+        name="span",
+    )
+    plot_r.add_layout(loss_span)
+
     # -- Interactive MENU
     select_exp = Select(title="Experiment:", value=crt_exp, options=list(experiments.keys()))
     model_id_slider = Slider(start=0, end=max_model, value=0, step=1, title="Training step")
@@ -344,6 +354,8 @@ def plot_values(df_paths: List[str]):
 
         cl_layout.children.clear()
         cl_layout.children.append(new_grid)
+
+        loss_span.location = model_id_slider.value
 
     for w in [goal_x_slider, model_id_slider, select_exp,  goal_y_slider]:
         w.on_change('value', update_data)
