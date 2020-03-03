@@ -30,7 +30,7 @@ class PPO(BaseAlgov2):
 
         self.out_dir = getattr(cfg, "out_dir", None)
         self.experience_dir = f"{self.out_dir}/exp"
-        self.save_experience = save_experience = 0
+        self.save_experience = save_experience = getattr(cfg, "save_experience", 0)
 
         if save_experience:
             import os

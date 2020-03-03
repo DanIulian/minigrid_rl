@@ -11,13 +11,22 @@ import math
 import collections
 from gym_minigrid.minigrid import OBJECT_TO_IDX
 import cv2
-from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper
+from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper, \
+    StateBonus, ActionBonus
 import torch
 
 try:
     import gym_minigrid
 except ImportError:
     pass
+
+
+def state_bonus(env):
+    return StateBonus(env)
+
+
+def action_bonus(env):
+    return ActionBonus(env)
 
 
 def include_full_state(env):

@@ -53,7 +53,11 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
     actual_procs = args.actual_procs
     add_to_cfg(full_args, MAIN_CFG_ARGS, "out_dir", full_args.out_dir)
 
-    env = gym.make(args.env)
+    env_args = getattr(full_args.env_cfg, "env_args", None)
+    env_args = dict() if env_args is None else vars(env_args)
+    print(env_args)
+
+    env = gym.make(args.env, **env_args)
     env.action_space.n = n_actions
     env.max_steps = full_args.env_cfg.max_episode_steps
     env.unwrapped._env_proc_id = 0
@@ -65,7 +69,7 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
     for env_i in range(1, no_envs, chunk_size):
         env_chunk = []
         for i in range(env_i, min(env_i + chunk_size, no_envs)):
-            env = gym.make(args.env)
+            env = gym.make(args.env, **env_args)
             env.action_space.n = n_actions
             env.max_steps = full_args.env_cfg.max_episode_steps
             env.unwrapped._env_proc_id = i
@@ -93,7 +97,7 @@ def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
     return basic_keys_format, printable_data
 
 
-def run(full_args: Namespace) -> None:
+def run(full_args: Namespace, return_models: bool = False):
 
     args = full_args.main
     agent_args = full_args.agent
@@ -103,6 +107,7 @@ def run(full_args: Namespace) -> None:
     if args.seed == 0:
         args.seed = full_args.run_id + 1
     max_eprews = args.max_eprews
+    max_eprews_window = getattr(args, "max_eprews_window", 1)
 
     post_process_args(agent_args)
     post_process_args(model_args)
@@ -243,9 +248,13 @@ def run(full_args: Namespace) -> None:
 
     has_evaluator = hasattr(algo, "evaluate") and full_args.env_cfg.no_eval_envs > 0
 
+    if return_models:
+        return algo, model, envs, saver
+
     # ==============================================================================================
     # Train model
 
+    prev_rewards = []
     crt_eprew = 0
     if "eprew" in other_data:
         crt_eprew = other_data["eprew"]
@@ -311,6 +320,7 @@ def run(full_args: Namespace) -> None:
             status = {"num_frames": num_frames, "update": update}
 
             crt_eprew = list(rreturn_per_episode.values())[0]
+            prev_rewards.append(crt_eprew)
 
         # -- Save vocabulary and model
 
@@ -323,8 +333,9 @@ def run(full_args: Namespace) -> None:
 
             utils.save_status(status, model_dir)
 
-        if crt_eprew > max_eprews:
-            print("Reached max return 0.93")
+        check_rew = np.mean(prev_rewards[-max_eprews_window:])
+        if len(prev_rewards) > max_eprews_window and check_rew > max_eprews:
+            print(f"Reached mean return {max_eprews} for a window of {max_eprews_window} steps")
             exit()
 
 

@@ -52,7 +52,7 @@ class SaveData:
         start_idx = get_last_training_path_idx(model_dir)
         self.index = itertools.count(start=start_idx, step=1)
 
-    def load_training_data(self, model_dir=None, best=False):
+    def load_training_data(self, model_dir=None, best=False, index=None):
         """ If best is set to false, the last training model is loaded """
         model_dir = model_dir if model_dir is not None else self.model_dir
 
@@ -63,7 +63,7 @@ class SaveData:
                 training_data = torch.load(path)
 
         if training_data is None:
-            path = get_training_data_path(model_dir, best=False)
+            path = get_training_data_path(model_dir, best=False, index=index)
             try:
                 training_data = torch.load(path)
             except OSError:

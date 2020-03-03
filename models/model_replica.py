@@ -105,7 +105,7 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
             return self._memory_size
 
     def forward(self, obs, memory):
-        x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
+        x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3).contiguous()
         x = self.image_conv(x)
         x = x.reshape(x.shape[0], -1)
         x = self.fc1(x)
