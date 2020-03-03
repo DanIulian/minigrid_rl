@@ -8,12 +8,16 @@ from typing import List
 
 
 """
+import sys
+from liftoff import parse_opts
+
 sys.argv = ['evaluate_model.py', '/media/andrei/CE04D7C504D7AF292/rl/minigrid_rl/results/2020Mar02-151641_vf_ppo-multiple-envss/0003_env_cfg.env_args.goal_rand_offset_3/0/cfg.yaml', '--session-id', '1']
 
 opts = parse_opts()
 """
 
 AGENT_ID = 10
+
 DIR_NAMES = ["right", "down", "left", "up"]
 TOOLS = "hover,save,pan,box_zoom,reset,wheel_zoom"
 
@@ -42,12 +46,13 @@ def run(opts):
 
     env_obs = env.observation(env.gen_obs())
     obs = env_obs["image"]
-
-    env.unwrapped._goal_default_pos = [8, 5]
+    env.unwrapped.goal_rand_offset = 0
+    env.unwrapped._goal_default_pos = [3, 2]
     env.reset()
 
-    env.unwrapped.agent_pos = [0,0]
-    env.unwrapped.agent_dir = 3
+    env.unwrapped.agent_pos = [2,2]
+    env.unwrapped.agent_dir = 1
+
     img_render = env.render('rgb_array')
     agent_pos = env.unwrapped.agent_pos
     goal_pos = env.unwrapped._goal_default_pos
@@ -59,13 +64,42 @@ def run(opts):
     # ==============================================================================================
     # -- Run model for all states
 
+    def get_next_state():
+        env.unwrapped.goal_rand_offset = 0
+        env.unwrapped._goal_default_pos = [9, 9]
+        env.reset()
+
+        agent_coord = np.array(list(itertools.product(range(1, 9), range(1, 9), range(4))))
+        next_coord = {ddd: np.zeros(len(agent_coord), dtype=np.int) for ddd in range(3)}
+
+        for iii, (pos_x, pos_y, dir) in enumerate(agent_coord):
+            for act in range(3):
+                env.unwrapped.agent_pos = [pos_x, pos_y]
+                env.unwrapped.agent_dir = dir
+                _ = env.step(act)
+                new_coord = np.concatenate([env.unwrapped.agent_pos, np.array([
+                    env.unwrapped.agent_dir])])
+                next_coord[act][iii] = (agent_coord == new_coord).all(axis=1).nonzero()[0][0]
+
+        return next_coord
+
+    next_coord = get_next_state()
+
     # -- Get states
     all_states = []
+
     # all_states_render = []
-    states_conf = np.array(list(itertools.product(range(-3, 4), range(-3, 4),
-                                                  range(1, 9), range(1, 9), range(4))))
+    rangers = [range(-3, 4), range(-3, 4), range(1, 9), range(1, 9), range(4)]
+    states_conf = np.array(list(itertools.product(*rangers)))
     states_conf[:, 0] += orig_goal_pos[0]
     states_conf[:, 1] += orig_goal_pos[1]
+
+    num_goal_states = len(list(itertools.product(*rangers[:2])))
+    num_ag_states = len(next_coord[0])
+    next_state_coord = {
+        k: np.concatenate([v + i*num_ag_states for i in range(num_goal_states)])
+        for k,v in next_coord.items()
+    }
 
     crt_goal_pos = (None, None)
     for goal_x, goal_y, pos_x, pos_y, dir in states_conf:
@@ -96,6 +130,9 @@ def run(opts):
             'pos_x': states_conf[:, 2],
             'pos_y': states_conf[:, 3],
             'dir': states_conf[:, 4],
+            'next_state_0': next_state_coord[0],
+            'next_state_1': next_state_coord[1],
+            'next_state_2': next_state_coord[2],
             'vpred': vpred.data.cpu().numpy(),
             'prob': list(dist.probs.data.cpu().numpy()),
             'entropy': list(dist.entropy().data.cpu().numpy()),
@@ -112,7 +149,7 @@ def run(opts):
 
     plot_data = {"models_data": models_data, "other_info": models_other_info,
                  "model_ids": model_ids}
-    np.save(f"CD_ag_1.1_goal_5.5+{orig_goal_rand_offset}", plot_data)
+    np.save(f"CD_ag_1.1_goal_5.5+{orig_goal_rand_offset}_v2", plot_data)
 
     # ==============================================================================================
     #  -- Run agent for an episode
@@ -194,6 +231,15 @@ def plot_values(df_paths: List[str]):
         model_ids = plot_data["model_ids"]
 
         df_select["prob"] = df_select["prob"].apply(lambda x: str([np.round(y, 3) for y in x]))
+        crt_v = df_select["vpred"].values
+
+        df_select["act_0_v"] = np.round(df_select.loc[df_select["next_state_0"].values][
+                                   "vpred"].values-crt_v, 3)
+        df_select["act_1_v"] = np.round(df_select.loc[df_select["next_state_1"].values][
+                                   "vpred"].values-crt_v, 3)
+        df_select["act_2_v"] = np.round(df_select.loc[df_select["next_state_2"].values][
+                                   "vpred"].values-crt_v, 3)
+
         # print(df_select["prob"].iloc[0])
         # df_select["prob"] =
         plots = []
@@ -223,7 +269,9 @@ def plot_values(df_paths: List[str]):
                         y_range=y_range,
                         sizing_mode="scale_width",
                         id=f"exp_{exp_name}_dir_{direction}_model_{select_model_id}_goal_{goal}",
-                        tooltips=[('Value', '@vpred'), ('prob', '@prob')])
+                        tooltips=[('Value', '@vpred'), ('prob', '@prob'),
+                                  ('act_0_v', '@act_0_v'), ('act_1_v', '@act_1_v'),
+                                  ('act_2_v', '@act_2_v')])
 
             x_tick = np.copy(x_range)
             x_tick[goal[0]-1] += "_goal"
@@ -261,11 +309,15 @@ def plot_values(df_paths: List[str]):
     plot_r = figure(title=f"Reward", plot_height=400, tools=TOOLS,
                     sizing_mode="scale_width",
                     tooltips=[('Reward', '@reward'), ('Episode', '@ep')])
-    ep, r = [], []
-    for k, v in experiments[crt_exp]["other_info"].items():
-        ep.append(k)
-        r.append(v["eprew"])
-    reward_column = ColumnDataSource(data=dict({"ep": ep, "reward": r}))
+
+    def get_ep_r(crt_exp):
+        ep, r = [], []
+        for k, v in experiments[crt_exp]["other_info"].items():
+            ep.append(k)
+            r.append(v["eprew"])
+        return dict({"ep": ep, "reward": r})
+
+    reward_column = ColumnDataSource(data=get_ep_r(crt_exp))
     plot_r.line(x="ep", y="reward", source=reward_column)
 
     # -- Interactive MENU
@@ -286,6 +338,7 @@ def plot_values(df_paths: List[str]):
             model_id_slider.end = get_num_models(crt_exp) - 1
             model_id_slider.value = min(model_id_slider.end, model_id_slider.value)
 
+            reward_column.data = get_ep_r(crt_exp)
         new_grid = get_model(crt_exp, model_id_slider.value,
                              (goal_x_slider.value, goal_y_slider.value))
 
@@ -305,8 +358,11 @@ def plot_values(df_paths: List[str]):
     curdoc().title = "4room experiments"
 
 
-plot_values(["CD_ag_1.1_goal_5.5+0.npy", "CD_ag_1.1_goal_5.5+1.npy", "CD_ag_1.1_goal_5.5+2.npy",
-             "CD_ag_1.1_goal_5.5+3.npy"])
+# plot_values(["CD_ag_1.1_goal_5.5+0.npy", "CD_ag_1.1_goal_5.5+1.npy", "CD_ag_1.1_goal_5.5+2.npy",
+#              "CD_ag_1.1_goal_5.5+3.npy"])
+plot_values(["CD_ag_1.1_goal_5.5+0_v2.npy", "CD_ag_1.1_goal_5.5+1_v2.npy",
+             "CD_ag_1.1_goal_5.5+2_v2.npy",
+             "CD_ag_1.1_goal_5.5+3_v2.npy"])
 # plot_values(["CD_ag_1.1_goal_5.5+1.npy"])
 
 # if __name__ == "__main__":
