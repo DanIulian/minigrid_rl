@@ -322,7 +322,7 @@ def plot_values(df_paths: List[str]):
 
     # -- Interactive MENU
     select_exp = Select(title="Experiment:", value=crt_exp, options=list(experiments.keys()))
-    model_id_slider = Slider(start=0, end=max_model, value=0, step=1, title="Model ID")
+    model_id_slider = Slider(start=0, end=max_model, value=0, step=1, title="Training step")
     goal_x_slider = Slider(start=goal_min_x, end=goal_max_x, value=gmean_x, step=1, title="Goal x")
     goal_y_slider = Slider(start=goal_min_y, end=goal_max_y, value=gmean_y, step=1, title="Goal y")
 
