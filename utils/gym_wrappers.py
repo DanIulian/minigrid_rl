@@ -33,6 +33,14 @@ def include_full_state(env):
     return RecordFullState(env)
 
 
+def just_move(env):
+    return JustMove(env)
+
+
+def constant_reward(env):
+    return ConstantReward(env)
+
+
 def full_state_rgb_train(env):
     return RGBImgObsWrapper(env, tile_size=6)
 
@@ -91,6 +99,83 @@ class TensorOut(gym.core.Wrapper):
 
     def seed(self, seed=None):
         self.unwrapped.seed(seed=seed)
+
+
+class ConstantReward(gym.core.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.env._reward = self._reward
+
+    def _reward(self):
+        return 1
+
+
+class JustMove(gym.core.Wrapper):
+    _move_actions = np.array([
+        [-1, 0],
+        [0, -1],
+        [1, 0],
+        [0, 1],
+    ])
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    def step(self, action):
+        env = self.unwrapped
+        env.step_count += 1
+
+        reward = 0
+        done = False
+
+        # Move action
+        if 0 <= action < 4:
+            # Get the new possible position for the action
+            fwd_pos = self.agent_pos + self._move_actions[action]
+
+            # Get the contents of the cell in front of the agent
+            fwd_cell = env.grid.get(*fwd_pos)
+
+            if fwd_cell == None or fwd_cell.can_overlap():
+                env.agent_pos = fwd_pos
+            if fwd_cell != None and fwd_cell.type == 'goal':
+                done = True
+                reward = env._reward()
+            if fwd_cell != None and fwd_cell.type == 'lava':
+                done = True
+
+        # # Pick up an object
+        # elif action == self.actions.pickup:
+        #     if fwd_cell and fwd_cell.can_pickup():
+        #         if self.carrying is None:
+        #             self.carrying = fwd_cell
+        #             self.carrying.cur_pos = np.array([-1, -1])
+        #             self.grid.set(*fwd_pos, None)
+        #
+        # # Drop an object
+        # elif action == self.actions.drop:
+        #     if not fwd_cell and self.carrying:
+        #         self.grid.set(*fwd_pos, self.carrying)
+        #         self.carrying.cur_pos = fwd_pos
+        #         self.carrying = None
+        #
+        # # Toggle/activate an object
+        # elif action == self.actions.toggle:
+        #     if fwd_cell:
+        #         fwd_cell.toggle(self, fwd_pos)
+        #
+        # # Done action (not used by default)
+        # elif action == self.actions.done:
+        #     pass
+        #
+        # else:
+        #     assert False, "unknown action"
+
+        if env.step_count >= env.max_steps:
+            done = True
+
+        obs = env.gen_obs()
+        return obs, reward, done, {}
 
 
 def rotate_img(img, cw=True):
