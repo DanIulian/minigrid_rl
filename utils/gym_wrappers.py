@@ -9,11 +9,12 @@ from optparse import OptionParser
 import time
 import math
 import collections
-from gym_minigrid.minigrid import OBJECT_TO_IDX
+from gym_minigrid.minigrid import OBJECT_TO_IDX, COLOR_TO_IDX
 import cv2
 from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper, \
     StateBonus, ActionBonus
 import torch
+from gym import error, spaces, utils
 
 try:
     import gym_minigrid
@@ -53,6 +54,10 @@ def full_state_train(env):
     return FullyObsWrapper(env)
 
 
+def full_state_train_dir(env):
+    return FullyObsWrapperDirDiff(env)
+
+
 def get_action_bonus_only(env):
     return ActionBonus(env, only_bonus=True)
 
@@ -79,6 +84,38 @@ def occupancy_stats(env):
 
 def tensor_out(env):
     return TensorOut(env)
+
+
+class FullyObsWrapperDirDiff(gym.core.ObservationWrapper):
+    """
+    Fully observable gridworld using a compact grid encoding
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+
+        self.observation_space.spaces["image"] = spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.env.width, self.env.height, 3),  # number of cells
+            dtype='uint8'
+        )
+
+    def observation(self, obs):
+        env = self.unwrapped
+        full_grid = env.grid.encode()
+        full_grid[env.agent_pos[0]][env.agent_pos[1]] = np.array([
+            OBJECT_TO_IDX['agent'],
+            COLOR_TO_IDX['red'],
+            env.agent_dir
+        ])
+
+        full_grid += env.agent_dir
+
+        return {
+            'mission': obs['mission'],
+            'image': full_grid
+        }
 
 
 class TensorOut(gym.core.Wrapper):
