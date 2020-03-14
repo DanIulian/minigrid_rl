@@ -128,6 +128,19 @@ class ConstantReward(gym.core.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.env._reward = self._reward
+        self.unwrapped._reward = self._reward
+
+    def step(self, action):
+        obs, reward, done, info = super().step(action)
+        if done:
+            env = self.unwrapped
+            dis_r = (1 - 0.9 * (env.step_count / env.max_steps)) * (env.step_count != env.max_steps)
+            if info is None:
+                info = dict({"discounted_r": dis_r})
+            else:
+                info["discounted_r"] = dis_r
+
+        return obs, reward, done, info
 
     def _reward(self):
         return 1
@@ -167,50 +180,13 @@ class JustMove(gym.core.Wrapper):
             if fwd_cell != None and fwd_cell.type == 'lava':
                 done = True
 
-        # # Pick up an object
-        # elif action == self.actions.pickup:
-        #     if fwd_cell and fwd_cell.can_pickup():
-        #         if self.carrying is None:
-        #             self.carrying = fwd_cell
-        #             self.carrying.cur_pos = np.array([-1, -1])
-        #             self.grid.set(*fwd_pos, None)
-        #
-        # # Drop an object
-        # elif action == self.actions.drop:
-        #     if not fwd_cell and self.carrying:
-        #         self.grid.set(*fwd_pos, self.carrying)
-        #         self.carrying.cur_pos = fwd_pos
-        #         self.carrying = None
-        #
-        # # Toggle/activate an object
-        # elif action == self.actions.toggle:
-        #     if fwd_cell:
-        #         fwd_cell.toggle(self, fwd_pos)
-        #
-        # # Done action (not used by default)
-        # elif action == self.actions.done:
-        #     pass
-        #
-        # else:
-        #     assert False, "unknown action"
-
         if env.step_count >= env.max_steps:
             done = True
 
         obs = env.gen_obs()
-        return obs, reward, done, {}
+        info = {}
 
-
-def rotate_img(img, cw=True):
-    if cw:
-        # rotate cw
-        out = cv2.transpose(img)
-        out = cv2.flip(out, flipCode=1)
-    else:
-        # rotate ccw
-        out = cv2.transpose(img)
-        out = cv2.flip(out, flipCode=0)
-    return out
+        return obs, reward, done, info
 
 
 class RecordingBehaviour(Wrapper):
@@ -567,129 +543,120 @@ def get_interactions_stats(ep_statistics):
     # in the environment
     logs = {
         "ep_completed": len(ep_statistics),
-
-        "doors_opened": 0,
-        "doors_closed": 0,
-        "doors_interactions": 0,
-
-        "keys_picked": 0,
-        "keys_dropped": 0,
-        "keys_interactions": 0,
-
-        "balls_picked": 0,
-        "balls_dropped": 0,
-        "balls_interactions": 0,
-
-        "boxes_picked": 0,
-        "boxes_dropped": 0,
-        "boxes_broken": 0,
-        "boxes_interactions": 0,
-
-        "objects_interactions": 0,
-        "categories_interactions": 0,
-
-        "possible": 0,
-        "seen": 0,
-        "discovered": 0,
-        "unique_states": 0,
-        "same_state_max": 0,
-        "same_state_mean": 0,
-        "same_state_std": 0,
     }
 
     if len(ep_statistics) == 0:
         return logs
 
+    if "interactions" in ep_statistics[0]:
+        logs.update({
+            "doors_opened": 0, "doors_closed": 0, "doors_interactions": 0,
+
+            "keys_picked": 0, "keys_dropped": 0, "keys_interactions": 0,
+
+            "balls_picked": 0, "balls_dropped": 0, "balls_interactions": 0,
+
+            "boxes_picked": 0, "boxes_dropped": 0, "boxes_broken": 0, "boxes_interactions": 0,
+
+            "objects_interactions": 0, "categories_interactions": 0,
+
+            "possible": 0, "seen": 0, "discovered": 0, "unique_states": 0, "same_state_max": 0,
+            "same_state_mean": 0, "same_state_std": 0,
+        })
+
     for ep_info in ep_statistics:
+        # Occupancy stats
         if "occupancy" in ep_info:
             for k, v in ep_info["occupancy"].items():
                 logs[k] += v
 
-        ep_info = ep_info['interactions']
+        if "interactions" in ep_info:
+            inter = ep_info['interactions']
 
-        global no_categories, no_objects, cat_interactions, objects_interactions
-        no_categories = 0.
-        no_objects = 0.
-        cat_interactions = 0.
-        objects_interactions = 0.
-
-        def stats_interactions(objects, interactions):
             global no_categories, no_objects, cat_interactions, objects_interactions
-            no_categories += (len(objects) > 0)
-            no_objects += len(objects)
-            cat_interactions += (interactions > 0)
-            objects_interactions += interactions
+            no_categories = 0.
+            no_objects = 0.
+            cat_interactions = 0.
+            objects_interactions = 0.
 
-        # count the mean number of interactions with doors
-        doors_interactions, doors_opened, doors_closed = 0., 0., 0.
-        for door in ep_info['doors'].values():
-            doors_opened += door['nr_opened']
-            doors_closed += door['nr_closed']
-            if door['nr_opened'] > 0:
-                doors_interactions += 1
+            def stats_interactions(objects, interactions):
+                global no_categories, no_objects, cat_interactions, objects_interactions
+                no_categories += (len(objects) > 0)
+                no_objects += len(objects)
+                cat_interactions += (interactions > 0)
+                objects_interactions += interactions
 
-        if len(ep_info['doors']) > 0 and doors_interactions > 0:
-            logs['doors_interactions'] +=\
-                float(doors_interactions) / len(ep_info['doors'])
-            logs['doors_opened'] += doors_opened / doors_interactions
-            logs['doors_closed'] += doors_closed / doors_interactions
+            # count the mean number of interactions with doors
+            doors_interactions, doors_opened, doors_closed = 0., 0., 0.
+            for door in inter['doors'].values():
+                doors_opened += door['nr_opened']
+                doors_closed += door['nr_closed']
+                if door['nr_opened'] > 0:
+                    doors_interactions += 1
 
-        stats_interactions(ep_info['doors'], doors_interactions)
+            if len(inter['doors']) > 0 and doors_interactions > 0:
+                logs['doors_interactions'] +=\
+                    float(doors_interactions) / len(inter['doors'])
+                logs['doors_opened'] += doors_opened / doors_interactions
+                logs['doors_closed'] += doors_closed / doors_interactions
 
-        # count the mean number of interactions with boxes
-        boxes_interactions, boxes_picked, boxes_dropped, boxes_broken = 0., 0., 0., 0.
-        for box in ep_info['boxes'].values():
-            boxes_picked += box["nr_picked_up"]
-            boxes_dropped += box["nr_put_down"]
-            boxes_broken += box['broken']
-            if box['nr_picked_up'] > 0 or box['broken'] > 0:
-                boxes_interactions += 1
+            stats_interactions(inter['doors'], doors_interactions)
 
-        if len(ep_info['boxes']) > 0 and boxes_interactions > 0:
-            logs['boxes_interactions'] +=\
-                float(boxes_interactions) / len(ep_info['boxes'])
-            logs['boxes_picked'] += boxes_picked / boxes_interactions
-            logs['boxes_dropped'] += boxes_dropped / boxes_interactions
-            logs['boxes_broken'] += boxes_broken / boxes_interactions
+            # count the mean number of interactions with boxes
+            boxes_interactions, boxes_picked, boxes_dropped, boxes_broken = 0., 0., 0., 0.
+            for box in inter['boxes'].values():
+                boxes_picked += box["nr_picked_up"]
+                boxes_dropped += box["nr_put_down"]
+                boxes_broken += box['broken']
+                if box['nr_picked_up'] > 0 or box['broken'] > 0:
+                    boxes_interactions += 1
 
-        stats_interactions(ep_info['boxes'], boxes_interactions)
+            if len(inter['boxes']) > 0 and boxes_interactions > 0:
+                logs['boxes_interactions'] +=\
+                    float(boxes_interactions) / len(inter['boxes'])
+                logs['boxes_picked'] += boxes_picked / boxes_interactions
+                logs['boxes_dropped'] += boxes_dropped / boxes_interactions
+                logs['boxes_broken'] += boxes_broken / boxes_interactions
 
-        # count the mean number of interactions with balls
-        balls_interactions, balls_picked, balls_dropped = 0., 0., 0.
-        for ball in ep_info['balls'].values():
-            balls_picked += ball["nr_picked_up"]
-            balls_dropped += ball["nr_put_down"]
-            if ball['nr_picked_up'] > 0:
-                balls_interactions += 1
+            stats_interactions(inter['boxes'], boxes_interactions)
 
-        if len(ep_info['balls']) > 0 and balls_interactions > 0:
-            logs['balls_interactions'] +=\
-                float(balls_interactions) / len(ep_info['balls'])
-            logs['balls_picked'] += balls_picked / balls_interactions
-            logs['balls_dropped'] += balls_dropped / balls_interactions
+            # count the mean number of interactions with balls
+            balls_interactions, balls_picked, balls_dropped = 0., 0., 0.
+            for ball in inter['balls'].values():
+                balls_picked += ball["nr_picked_up"]
+                balls_dropped += ball["nr_put_down"]
+                if ball['nr_picked_up'] > 0:
+                    balls_interactions += 1
 
-        stats_interactions(ep_info['balls'], balls_interactions)
+            if len(inter['balls']) > 0 and balls_interactions > 0:
+                logs['balls_interactions'] +=\
+                    float(balls_interactions) / len(inter['balls'])
+                logs['balls_picked'] += balls_picked / balls_interactions
+                logs['balls_dropped'] += balls_dropped / balls_interactions
 
-        # count the mean number of interactions with keys
-        keys_interactions, keys_picked, keys_dropped = 0., 0., 0.
-        for key in ep_info['keys'].values():
-            keys_picked += key["nr_picked_up"]
-            keys_dropped += key["nr_put_down"]
-            if key['nr_picked_up'] > 0:
-                keys_interactions += 1
+            stats_interactions(inter['balls'], balls_interactions)
 
-        if len(ep_info['keys']) > 0 and keys_interactions > 0:
-            logs['keys_interactions'] +=\
-                float(keys_interactions) / len(ep_info['keys'])
-            logs['keys_picked'] += keys_picked / keys_interactions
-            logs['keys_dropped'] += keys_dropped / keys_interactions
+            # count the mean number of interactions with keys
+            keys_interactions, keys_picked, keys_dropped = 0., 0., 0.
+            for key in inter['keys'].values():
+                keys_picked += key["nr_picked_up"]
+                keys_dropped += key["nr_put_down"]
+                if key['nr_picked_up'] > 0:
+                    keys_interactions += 1
 
-        stats_interactions(ep_info['keys'], keys_interactions)
+            if len(inter['keys']) > 0 and keys_interactions > 0:
+                logs['keys_interactions'] +=\
+                    float(keys_interactions) / len(inter['keys'])
+                logs['keys_picked'] += keys_picked / keys_interactions
+                logs['keys_dropped'] += keys_dropped / keys_interactions
 
-        # Calculate the total number of objects
-        reached_goal = ep_info['reward']
-        logs['objects_interactions'] += (objects_interactions + reached_goal) / (no_objects + 1)
-        logs['categories_interactions'] += (cat_interactions + reached_goal) / (no_categories + 1)
+            stats_interactions(inter['keys'], keys_interactions)
+
+            # Calculate the total number of objects
+            reached_goal = inter['reward']
+            logs['objects_interactions'] += (objects_interactions + reached_goal) / (no_objects + 1)
+            logs['categories_interactions'] += (cat_interactions + reached_goal) / \
+                                               (no_categories + 1)
 
     for log_key in logs:
         if log_key != 'ep_completed':

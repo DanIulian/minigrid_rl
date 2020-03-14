@@ -5,6 +5,7 @@
 import numpy
 import torch
 import torch.nn.functional as F
+import collections
 
 from agents.base_algo_v2 import BaseAlgov2
 
@@ -24,6 +25,7 @@ class PPO(BaseAlgov2):
         clip_eps = getattr(cfg, "clip_eps", 0.)
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
+        log_metrics_names = getattr(cfg, "log_metrics", [])
 
         optimizer = getattr(cfg, "optimizer", "Adam")
         optimizer_args = getattr(cfg, "optimizer_args", {})
@@ -40,8 +42,9 @@ class PPO(BaseAlgov2):
         reshape_reward = kwargs.get("reshape_reward", None)
 
         super().__init__(
-            envs, acmodel, num_frames_per_proc, discount, optimizer_args.lr, gae_lambda, entropy_coef,
-            value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward)
+            envs, acmodel, num_frames_per_proc, discount, optimizer_args.lr, gae_lambda,
+            entropy_coef, value_loss_coef, max_grad_norm, recurrence, preprocess_obss,
+            reshape_reward, log_metrics_names=log_metrics_names)
 
         self.clip_eps = clip_eps
         self.epochs = epochs

@@ -91,8 +91,9 @@ def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
 
     if extra_logs:
         for field in extra_logs:
-            basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
-            printable_data.append(data[header.index(field[0])])
+            if field[0] in header:
+                basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
+                printable_data.append(data[header.index(field[0])])
 
     return basic_keys_format, printable_data
 
@@ -103,6 +104,7 @@ def run(full_args: Namespace, return_models: bool = False):
     agent_args = full_args.agent
     model_args = full_args.model
     extra_logs = getattr(full_args, "extra_logs", None)
+    main_r_key = getattr(full_args, "main_r_key", None)
 
     if args.seed == 0:
         args.seed = full_args.run_id + 1
@@ -319,8 +321,11 @@ def run(full_args: Namespace, return_models: bool = False):
 
             status = {"num_frames": num_frames, "update": update}
 
-            crt_eprew = list(rreturn_per_episode.values())[0]
-            prev_rewards.append(crt_eprew)
+            if main_r_key is None:
+                crt_eprew = list(rreturn_per_episode.values())[0]
+                prev_rewards.append(crt_eprew)
+            else:
+                prev_rewards.append(logs[main_r_key])
 
         # -- Save vocabulary and model
 

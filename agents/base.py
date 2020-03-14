@@ -4,8 +4,9 @@
 
 from abc import ABC, abstractmethod
 import torch
-import numpy
+import numpy as np
 from copy import deepcopy
+import collections
 
 from torch_rl.format import default_preprocess_obss
 from torch_rl.utils import DictList, ParallelEnv
@@ -17,7 +18,7 @@ class BaseAlgo(ABC):
 
     def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                 min_stats_ep_batch=16):
+                 min_stats_ep_batch=16, log_metrics_names=None):
         """
         Initializes a `BaseAlgo` instance.
 
@@ -112,6 +113,11 @@ class BaseAlgo(ABC):
         self.log_reshaped_return = [0] * self.num_procs
         self.log_num_frames = [0] * self.num_procs
 
+        win_size = self.num_procs
+        log_metrics_names = list() if log_metrics_names is None else log_metrics_names
+        self.log_metrics = dict({name: collections.deque([0] * win_size, win_size) for name in
+                                 log_metrics_names})
+
     def collect_experiences(self):
         """Collects rollouts and computes advantages.
 
@@ -174,12 +180,12 @@ class BaseAlgo(ABC):
             self.log_episode_reshaped_return += self.rewards[i]
             self.log_episode_num_frames += torch.ones(self.num_procs, device=self.device)
 
-            for i, done_ in enumerate(done):
+            for j, done_ in enumerate(done):
                 if done_:
                     self.log_done_counter += 1
-                    self.log_return.append(self.log_episode_return[i].item())
-                    self.log_reshaped_return.append(self.log_episode_reshaped_return[i].item())
-                    self.log_num_frames.append(self.log_episode_num_frames[i].item())
+                    self.log_return.append(self.log_episode_return[j].item())
+                    self.log_reshaped_return.append(self.log_episode_reshaped_return[j].item())
+                    self.log_num_frames.append(self.log_episode_num_frames[j].item())
 
             self.log_episode_return *= self.mask
             self.log_episode_reshaped_return *= self.mask
@@ -269,10 +275,22 @@ class BaseAlgo(ABC):
         # process statistics about the agent's behaviour
         # in the environment
 
+        # Get GeneralLogs
+        for ep in self._ep_statistics:
+            for k, v in self.log_metrics.items():
+                if k in ep:
+                    v.append(ep[k])
+
+        logs = dict()
+        for k, v in self.log_metrics.items():
+            logs[k] = np.mean(v)
+
         if self._finished_episodes < self._min_stats_ep_batch:
-            return get_interactions_stats([])
+            intearactions = get_interactions_stats([])
         else:
-            logs = get_interactions_stats(self._ep_statistics)
+            intearactions = get_interactions_stats(self._ep_statistics)
+
+        logs.update(intearactions)
 
         # reset statistics
         self._finished_episodes = 0
