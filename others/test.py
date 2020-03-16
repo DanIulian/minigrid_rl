@@ -30,6 +30,61 @@ source activate env
         
 """
 
+import torch
+import time
+
+
+no_tests = 10
+
+
+def get_shuffle_seq(seq):
+    seq_len = seq.size(0)
+
+    seq_order = torch.randperm(seq_len)
+    seq = seq[seq_order]
+
+    act_seq_order = torch.zeros_like(seq_order)
+    act_seq_order[seq_order] = torch.arange(seq_len)
+    seq = seq.float()
+
+    return seq, act_seq_order.to(seq.device)
+
+
+data = torch.rand(1500, 6, 3, 4).cuda()
+
+st = time.time()
+for _ in range(no_tests):
+    s, so = [], []
+    for i in range(data.size(0)):
+        _s, _so = get_shuffle_seq(data[i])
+        s.append(_s)
+        so.append(_so)
+s = torch.stack(s)
+so = torch.stack(so).cuda()
+
+end = time.time() - st
+print(end)
+
+st = time.time()
+for _ in range(no_tests):
+    rand = torch.rand(data.size()[:2], device=data.device)
+    batch_rand_perm = rand.argsort(dim=1)
+    batch_rand_perm = batch_rand_perm[(..., ) + (None, ) * (len(data.size())-2)].expand_as(data)
+    shuffled = data.gather(1, batch_rand_perm)
+end = time.time() - st
+print(end)
+
+data = torch.arange(6).unsqueeze(0).expand(10, 6)
+
+rand = torch.rand(data.size()[:2], device=data.device)
+batch_rand_perm = rand.argsort(dim=1)
+batch_rand_perm = batch_rand_perm[(...,) + (None,) * (len(data.size()) - 2)].expand_as(data)
+shuffled = data.gather(1, batch_rand_perm)
+
+ordered = torch.arange(data.size(1)).unsqueeze(0).expand(data.size()[:2])
+correct_order = torch.zeros_like(ordered)
+correct_order.scatter_(1, batch_rand_perm, ordered)
+
 
 def test(a: int, b: List[int]) -> str:
     c = [x + a for x in b]
@@ -141,6 +196,19 @@ print(f"IMG size {out.size()}")
 
 # ==================================================================================================
 
+class Test:
+    def __init__(self):
+        pass
+
+    def what(self):
+        for i in range(0, 10, 2):
+            yield i
+
+t = Test()
+d = t.what()
+
+for ii, i in enumerate(d):
+    print(i)
 
 class Ana:
     def __init__(self):
@@ -157,4 +225,34 @@ class Ana:
 if __name__ == "__main__":
     a = Ana()
     a.test()
+# ==================================================================================================
+import gym
+import gym_minigrid
+from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper
+import numpy as np
+import cv2
 
+env_key = "MiniGrid-FourRooms-v0"
+seed = 0
+
+env = gym.make(env_key, agent_pos = (1,1), goal_pos = None, doors = True)
+env.max_steps = 400
+env = FullyObsWrapper(env)
+env.seed(seed)
+
+obs = env.reset()["image"]
+
+
+while True:
+    act = np.random.randint(3)
+    obs, r, done, info = env.step(act)
+
+    img = obs["image"] * 15
+    img = cv2.resize(img, (0, 0), fx=20, fy=20)
+    cv2.imshow("test", img)
+    cv2.waitKey(1)
+    if done:
+        env.reset()
+        print("RESET")
+
+act = np.random.randint(3)

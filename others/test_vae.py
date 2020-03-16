@@ -7,6 +7,29 @@ from torch.nn import functional as F
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
+import cv2
+x = torch.load("/home/andrei/Downloads/maml_results/exp_update_0")
+num_prox = x["num_procs"]
+frames_per_proc = x["frames_per_proc"]
+
+obs = x['obs_image'].view((num_prox, frames_per_proc) + x['obs_image'].size()[1:])
+act = x['action'].view((num_prox, frames_per_proc))
+mask = x['mask'].view((num_prox, frames_per_proc))
+
+env = 0
+i = 0
+while i < frames_per_proc:
+    print(i, act[env, i].item(), mask[env, i].item())
+    o = obs[env][i]
+    o = o.cpu().numpy()
+
+    img = cv2.resize(o, (0, 0), fx=10, fy=10, interpolation=cv2.INTER_NEAREST)
+    cv2.imshow("test", img)
+    q = cv2.waitKey(0)
+    if chr(q) == "q":
+        i -= 2
+    i += 1
+
 
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',

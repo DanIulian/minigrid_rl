@@ -1,3 +1,0 @@
-env_cfg:
-  env_args:
-    goal_rand_offset: [0,1,2,3,4,5,6]
