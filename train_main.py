@@ -178,6 +178,7 @@ def run(full_args: Namespace, return_models: bool = False):
 
     # Generate evaluation envs
     eval_envs = []
+    eval_episodes = getattr(full_args.env_cfg, "eval_episodes", 0)
     if full_args.env_cfg.no_eval_envs > 0:
         no_envs = full_args.env_cfg.no_eval_envs
         eval_envs, chunk_size = get_envs(full_args, env_wrapper, no_envs, n_actions=no_actions)
@@ -246,7 +247,8 @@ def run(full_args: Namespace, return_models: bool = False):
     # Load Agent
 
     algo = get_agent(full_args.agent, envs, model, agent_data,
-                     preprocess_obss=preprocess_obss, reshape_reward=None, eval_envs=eval_envs)
+                     preprocess_obss=preprocess_obss, reshape_reward=None,
+                     eval_envs=eval_envs, eval_episodes=eval_episodes)
 
     has_evaluator = hasattr(algo, "evaluate") and full_args.env_cfg.no_eval_envs > 0
 
@@ -274,7 +276,8 @@ def run(full_args: Namespace, return_models: bool = False):
         update += 1
 
         if update % args.eval_interval == 0 and has_evaluator:
-            algo.evaluate()
+            eval_logs = algo.evaluate(eval_key=main_r_key)
+            logs.update(eval_logs)
 
         prev_start_time = update_start_time
         update_start_time = time.time()
