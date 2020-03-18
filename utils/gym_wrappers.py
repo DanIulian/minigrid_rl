@@ -34,6 +34,18 @@ def include_full_state(env):
     return RecordFullState(env)
 
 
+def aux_in_goal_pos(env):
+    return GoalPosition(env)
+
+
+def aux_in_rel_pos(env):
+    return RelativePosition(env)
+
+
+def aux_in_agent_pos(env):
+    return AgentPosition(env)
+
+
 def just_move(env):
     return JustMove(env)
 
@@ -144,6 +156,49 @@ class ConstantReward(gym.core.Wrapper):
 
     def _reward(self):
         return 1
+
+
+class GoalPosition(gym.core.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def observation(self, obs):
+        obs = self.env.observation(obs)
+        goal_position = self.unwrapped._crt_goal_pos
+
+        return {
+            'aux_in': list(goal_position),
+            'image': obs["image"]
+        }
+
+
+class AgentPosition(gym.core.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def observation(self, obs):
+        obs = self.env.observation(obs)
+        agent_position = self.unwrapped.agent_pos
+
+        return {
+            'aux_in': list(agent_position),
+            'image': obs["image"]
+        }
+
+
+class RelativePosition(gym.core.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def observation(self, obs):
+        obs = self.env.observation(obs)
+        agent_position = self.unwrapped.agent_pos
+        goal_position = self.unwrapped._crt_goal_pos
+
+        return {
+            'aux_in': [goal_position[0]-agent_position[0], goal_position[1]-agent_position[1]],
+            'image': obs["image"]
+        }
 
 
 class JustMove(gym.core.Wrapper):

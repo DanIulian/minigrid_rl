@@ -22,6 +22,8 @@ def get_obss_preprocessor(*args, type=None, **kwargs):
         return get_obss_preprocessor_default(*args, **kwargs)
     elif type == "tensor":
         return get_obss_preprocessor_tensor(*args, **kwargs)
+    elif type == "aux_in":
+        return get_obss_preprocessor_aux_in(*args, **kwargs)
     else:
         raise NotImplemented
 
@@ -121,6 +123,24 @@ def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=
     return obs_space, preprocess_obss
 
 
+def get_obss_preprocessor_aux_in(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                                 permute=False, aux_in_size: int = 2):
+    # Check if it is a MiniGrid environment
+    if re.match("MiniGrid-.*", env_id):
+        obs_space = {"image": obs_space.spaces['image'].shape, "text": aux_in_size}
+
+        def preprocess_obss(obss, device=None, permute=permute):
+            return torch_rl.DictList({
+                "image": preprocess_images([obs["image"] for obs in obss], device=device,
+                                           max_image_value=max_image_value, normalize=normalize),
+                "text": preprocess_aux_in([obs["aux_in"] for obs in obss], device=device)
+            })
+    else:
+        raise ValueError("Unknown observation space: " + str(obs_space))
+
+    return obs_space, preprocess_obss
+
+
 def get_obss_preprocessor_tensor(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
                                permute=False):
     # Check if it is a MiniGrid environment
@@ -151,6 +171,16 @@ def get_obss_preprocessor_tensor(env_id, obs_space, model_dir, max_image_value=1
         raise ValueError("Unknown observation space: " + str(obs_space))
 
     return obs_space, preprocess_obss
+
+
+def preprocess_aux_in(aux_data, device=None, norm_value=16., normalize=True):
+    # Bug of Pytorch: very slow if not first converted to numpy array
+    aux_data = numpy.array(aux_data)
+    aux_data = torch.tensor(aux_data, device=device, dtype=torch.float)
+    if normalize:
+        aux_data.div_(norm_value)
+
+    return aux_data
 
 
 def preprocess_images(images, device=None, max_image_value=15., normalize=True, permute=False):

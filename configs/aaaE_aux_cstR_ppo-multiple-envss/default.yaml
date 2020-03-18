@@ -1,0 +1,70 @@
+main:
+  env: MiniGrid-EmptyOOD-v0 # MiniGrid-Empty-8x8-v0 # MiniGrid-FourRooms-v0 #
+  #MiniGrid-Empty-8x8-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  seed: 0 # type=int, default=1, help="random seed (default: 1)")
+  procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
+  actual_procs: 4 # type=int, default=16, help="number of processes (default: 16)")
+  frames: 2.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
+  eval_interval: 1
+  save_interval: 10000 # type=int, default=0, help="number of updates between two saves (default: 0,
+  #0 means no saving)")
+  tb: false # action="store_true", default=False, help="log into Tensorboard")
+  text: &text true # action="store_true", default=False, help="add a GRU to the model to handle text
+    #input")
+
+  max_eprews: 0.96 # Cap training when mean episode rewards reaches this value
+  max_eprews_window: 15
+  save_best: true
+  save_all: true
+
+env_cfg:
+  max_episode_steps: 400 # environment steps
+  max_image_value: 10.
+  normalize: true
+  wrapper: [aux_in_rel_pos, full_state_train, constant_reward, just_move]
+  no_eval_envs: 16
+  eval_episodes: 50
+  obss_preprocessor: "aux_in"
+  env_args:
+    size: 16
+    agent_pos: [1, 1]
+    goal_pos: [8, 8]
+    goal_rand_offset: 0
+
+agent:
+  name: PPOCustomEval
+  frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update(default: 5 for A2C and 128 for PPO)")
+  discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
+  optimizer: RMSprop
+  optimizer_args:
+    lr: 0.0007
+    eps: 1.e-5
+    alpha: 0.99
+  gae_lambda: 0.95 # type=float, default=0.95, help="lambda coefficient in GAE formula (default: 0.95, 1 means no gae)")
+  entropy_coef: 0.001 # type=float, default=0.01, help="entropy term coefficient (default: 0.01)")
+  value_loss_coef: 0.5 # type=float, default=0.5, help="value loss term coefficient (default: 0.5)")
+  max_grad_norm: 0.5 # type=float, default=0.5, help="maximum norm of gradient (default: 0.5)")
+  clip_eps: 0.1 # type=float, default=0.2, help="clipping epsilon for PPO (default: 0.2)")
+  epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
+  batch_size: 256 # type=int, default=256, help="batch size for PPO (default: 256)")
+  recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
+  # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
+  min_mem: &min_mem 1  # If min number of recurrence to use mem
+  int_coeff: 1.
+  ext_coeff: 2.
+  exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
+  log_metrics: ["discounted_r"]
+
+model:
+  name: ModelAuxIn
+  recurrence: *recurrence
+  min_mem: *min_mem
+  text: *text
+  memory_type: GRU
+  use_memory: true
+  k_sizes: [3, 3, 3]
+  s_sizes: [2, 2, 1]
+
+extra_logs: [[discounted_r, dR, 6f], [eval_r, ER, 6f], [train_r, TR, 6f]]
+main_r_key: "discounted_r"
