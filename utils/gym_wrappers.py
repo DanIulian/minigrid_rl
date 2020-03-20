@@ -151,7 +151,7 @@ class ConstantReward(gym.core.Wrapper):
                 info = dict({"discounted_r": dis_r})
             else:
                 info["discounted_r"] = dis_r
-
+            info["goal_pos"] = env._crt_goal_pos
         return obs, reward, done, info
 
     def _reward(self):
