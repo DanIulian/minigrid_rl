@@ -77,7 +77,7 @@ class PPO(BaseAlgov2):
         exps, logs = self.collect_experiences()
 
         if self.save_experience > 0:
-            norm_value = 255.
+            norm_value = 10.
             # assert False, "Must set norm value"
 
             nstep = self.save_experience * self.num_frames_per_proc
