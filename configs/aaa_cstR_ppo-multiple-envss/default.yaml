@@ -21,7 +21,7 @@ env_cfg:
   max_episode_steps: 400 # environment steps
   max_image_value: 10.
   normalize: true
-  wrapper: [full_state_train, just_move]
+  wrapper: [full_state_train, constant_reward, just_move]
   no_eval_envs: 2
 #  obss_preprocessor: "tensor"
   env_args:
@@ -52,7 +52,7 @@ agent:
   int_coeff: 1.
   ext_coeff: 2.
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
-  #log_metrics: ["discounted_r"]
+  log_metrics: ["discounted_r"]
 
 model:
   name: Model
@@ -64,5 +64,5 @@ model:
   k_sizes: [3, 3, 3]
   s_sizes: [2, 2, 1]
 
-#extra_logs: [[discounted_r, dR, 6f]]
-#main_r_key: "discounted_r"
+extra_logs: [[discounted_r, dR, 6f]]
+main_r_key: "discounted_r"
