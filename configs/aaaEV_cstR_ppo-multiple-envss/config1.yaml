@@ -1,5 +1,5 @@
-main:
-  env: [MiniGrid-EmptyOOD-v0, MiniGrid-EmptyOOD-v1]
+#main:
+#  env: [MiniGrid-EmptyOOD-v0, MiniGrid-EmptyOOD-v1]
 env_cfg:
   no_eval_envs: [25]
   env_args:
