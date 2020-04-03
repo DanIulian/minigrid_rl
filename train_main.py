@@ -99,6 +99,9 @@ def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
 
 
 def run(full_args: Namespace, return_models: bool = False):
+    if sys.argv[0].startswith("train"):
+        import os
+        full_args.out_dir = os.path.dirname(sys.argv[1])
 
     args = full_args.main
     agent_args = full_args.agent
@@ -328,6 +331,7 @@ def run(full_args: Namespace, return_models: bool = False):
                 crt_eprew = list(rreturn_per_episode.values())[0]
                 prev_rewards.append(crt_eprew)
             else:
+                crt_eprew = logs[main_r_key]
                 prev_rewards.append(logs[main_r_key])
 
         # -- Save vocabulary and model

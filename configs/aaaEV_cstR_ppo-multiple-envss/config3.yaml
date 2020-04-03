@@ -1,0 +1,6 @@
+main:
+  env: [MiniGrid-EmptyOOD-v0, MiniGrid-EmptyOOD-v1]
+env_cfg:
+  no_eval_envs: [81]
+  env_args:
+    goal_rand_offset: [3]
