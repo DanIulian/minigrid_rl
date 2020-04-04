@@ -55,6 +55,7 @@ class PPOCustomEvalValue(PPO):
         acmodel = self.acmodel
         reshape_reward = self.reshape_reward
         rewards = self.eval_rewards
+        eps_greedy = 0.95
 
         # ==========================================================================================
         # TODO HARDCODED
@@ -131,9 +132,17 @@ class PPOCustomEvalValue(PPO):
                         # # Change value in action dist =
                         act_values = value.view(4, -1)
                         dist = Categorical(logits=act_values.t())
-                        action = dist.sample()
+                        # action = dist.sample()
+                        action = dist.probs.max(1).indices
                     else:
-                        action = dist.sample()
+                        # action = dist.sample()
+                        action = dist.probs.max(1).indices
+
+                # eps-greedy
+
+                rand_action = torch.rand(action.size()) > eps_greedy
+                rv_action = torch.randint(0, 4, size=(rand_action.sum(),)).type(dtype=action.dtype)
+                action[rand_action] = rv_action.to(action.device)
 
                 next_obs, reward, done, info = env.step(action.cpu().numpy())
 

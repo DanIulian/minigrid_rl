@@ -23,7 +23,8 @@ env_cfg:
   normalize: true
   wrapper: [full_state_train, constant_reward, just_move]
   no_eval_envs: 25
-  eval_episodes: 2 # 50
+  eval_episodes: 1 # 50
+  no_actions: 4 # 50
 
 #  obss_preprocessor: "tensor"
   env_args:
