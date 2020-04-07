@@ -1,26 +1,16 @@
 from . import ppo_rnd
 from . import ppo_replica
-from . import ppo_custom_eval
-from . import ppo_custom_eval_value
 from . import ppo_worlds
-from . import ppo_worlds_separate
 from . import ppo_icm
 from . import ppo_prediction_error
-from . import ppo_theorder
-from . import ppo_conditioned
+
 
 AGENTS = {
     "PPORND": ppo_rnd.PPORND,
     "PPO": ppo_replica.PPO,
-    "PPOCustomEval": ppo_custom_eval.PPOCustomEval,
-    "PPOCustomEvalValue": ppo_custom_eval_value.PPOCustomEvalValue,
-    "PPOConditioned": ppo_conditioned.PPOConditioned,
-    "PPOOrder": ppo_theorder.PPOOrder,
     "PPOWorlds": ppo_worlds.PPOWorlds,
-    "PPOWorldsSeparate": ppo_worlds_separate.PPOWorlds,
     "PPOIcm": ppo_icm.PPOIcm,
     "PPOPE": ppo_prediction_error.PPOPE
-
 }
 
 

@@ -1,7 +1,0 @@
-main:
-  env: ["MiniGrid-DoorKey-8x8-v0", "MiniGrid-DoorKey-16x16-v0",
-        "MiniGrid-MultiRoom-N6-v0",
-        "MiniGrid-ObstructedMaze-1Dlhb-v0",
-        "MiniGrid-ObstructedMaze-2Dlh-v0", "MiniGrid-ObstructedMaze-1Q-v0",
-        "MiniGrid-Dynamic-Obstacles-16x16-v0"
-  ]
