@@ -236,10 +236,10 @@ def run(full_args: Namespace, return_models: bool = False):
 
     if model is None:
         model = get_model(model_args, obs_space, first_env.action_space,
-                          use_memory=model_args.mem, use_text=model_args.text)
+                          use_memory=model_args.mem)
         logger.info(f"Model [{model_args.name}] successfully created\n")
 
-         # Print Model info
+        # Print Model info
         logger.info("{}\n".format(model))
 
     if torch.cuda.is_available():

@@ -4,9 +4,6 @@
 
 import numpy
 import torch
-import torch.nn.functional as F
-import collections
-
 from agents.base_algo_v2 import BaseAlgov2
 
 
@@ -15,6 +12,8 @@ class PPO(BaseAlgov2):
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
+
+        # Get standard config params from config file
         num_frames_per_proc = getattr(cfg, "frames_per_proc", 128)
         discount = getattr(cfg, "discount", 0.99)
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
@@ -27,6 +26,7 @@ class PPO(BaseAlgov2):
         batch_size = getattr(cfg, "batch_size", 256)
         log_metrics_names = getattr(cfg, "log_metrics", [])
 
+        # Get optimizer config params from config file
         optimizer = getattr(cfg, "optimizer", "Adam")
         optimizer_args = getattr(cfg, "optimizer_args", {})
         eval_envs = kwargs.get("eval_envs", [])
@@ -94,7 +94,6 @@ class PPO(BaseAlgov2):
 
         for epoch_no in range(self.epochs):
             # Initialize log values
-
             log_entropies = []
             log_values = []
             log_policy_losses = []
@@ -212,7 +211,7 @@ class PPO(BaseAlgov2):
         self.batch_num += 1
 
         num_indexes = self.batch_size // self.recurrence
-        batches_starting_indexes = [indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)]
+        batches_starting_indexes = [indexes[i:i + num_indexes] for i in range(0, len(indexes), num_indexes)]
 
         return batches_starting_indexes
 

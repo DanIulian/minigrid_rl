@@ -51,13 +51,15 @@ class BaseAlgo(ABC):
         reshape_reward : function
             a function that shapes the reward, takes an
             (observation, action, reward, done) tuple as an input
+        min_stats_ep_batch: integer
+            TODO
+        log_metrics_names: list
+            TODO
         """
 
         # Store parameters
-
         self.env = ParallelEnv(envs)
         self.acmodel = acmodel
-        self.acmodel.train()
         self.num_frames_per_proc = num_frames_per_proc
         self.discount = discount
         self.lr = lr
@@ -69,24 +71,24 @@ class BaseAlgo(ABC):
         self.preprocess_obss = preprocess_obss or default_preprocess_obss
         self.reshape_reward = reshape_reward
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.acmodel.to(self.device)
+        self.acmodel.train()
+
         # Initialize episode statistics values
         self._finished_episodes = 0
         self._ep_statistics = []
         self._min_stats_ep_batch = min_stats_ep_batch
 
         # Store helpers values
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_procs = sum(map(len, envs)) if isinstance(envs[0], list) else len(envs)
         self.num_frames = self.num_frames_per_proc * self.num_procs
 
         # Control parameters
-
         assert self.acmodel.recurrent or self.recurrence == 1
         assert self.num_frames_per_proc % self.recurrence == 0
 
         # Initialize experience values
-
         shape = (self.num_frames_per_proc, self.num_procs)
 
         self.obs = self.env.reset()
@@ -103,7 +105,6 @@ class BaseAlgo(ABC):
         self.log_probs = torch.zeros(*shape, device=self.device)
 
         # Initialize log values
-
         self.log_episode_return = torch.zeros(self.num_procs, device=self.device)
         self.log_episode_reshaped_return = torch.zeros(self.num_procs, device=self.device)
         self.log_episode_num_frames = torch.zeros(self.num_procs, device=self.device)
@@ -154,7 +155,6 @@ class BaseAlgo(ABC):
             self.collect_interactions(info)
 
             # Update experiences values
-
             self.obss[i] = self.obs
             self.obs = obs
             if self.acmodel.recurrent:
@@ -175,7 +175,6 @@ class BaseAlgo(ABC):
             self.log_probs[i] = dist.log_prob(action)
 
             # Update log values
-
             self.log_episode_return += torch.tensor(reward, device=self.device, dtype=torch.float)
             self.log_episode_reshaped_return += self.rewards[i]
             self.log_episode_num_frames += torch.ones(self.num_procs, device=self.device)
@@ -193,6 +192,7 @@ class BaseAlgo(ABC):
 
         # Add advantage and return to experiences
 
+        # Make one step further to get the next value approximation
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
             if self.acmodel.recurrent:
@@ -201,9 +201,9 @@ class BaseAlgo(ABC):
                 _, next_value = self.acmodel(preprocessed_obs)
 
         for i in reversed(range(self.num_frames_per_proc)):
-            next_mask = self.masks[i+1] if i < self.num_frames_per_proc - 1 else self.mask
-            next_value = self.values[i+1] if i < self.num_frames_per_proc - 1 else next_value
-            next_advantage = self.advantages[i+1] if i < self.num_frames_per_proc - 1 else 0
+            next_mask = self.masks[i + 1] if i < self.num_frames_per_proc - 1 else self.mask
+            next_value = self.values[i + 1] if i < self.num_frames_per_proc - 1 else next_value
+            next_advantage = self.advantages[i + 1] if i < self.num_frames_per_proc - 1 else 0
 
             delta = self.rewards[i] + self.discount * next_value * next_mask - self.values[i]
             self.advantages[i] = delta + self.discount * self.gae_lambda * next_advantage * next_mask
@@ -234,11 +234,9 @@ class BaseAlgo(ABC):
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
         # Preprocess experiences
-
         exps.obs = self.preprocess_obss(exps.obs, device=self.device)
 
         # Log some values
-
         keep = max(self.log_done_counter, self.num_procs)
 
         log = {

@@ -1,13 +1,13 @@
 main:
-  env: MiniGrid-ObstructedMaze-2Dlhb-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-Empty-6x6-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
-  procs: 32 # type=int, default=16, help="number of processes (default: 16)") # number of envs
+  procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 3 # type=int, default=16, help="number of processes (default: 16)")
   frames: 8.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   eval_interval: 10
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
-  save_interval: 10 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
-  tb: true # action="store_true", default=False, help="log into Tensorboard")
+  save_interval: 0 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
+  tb: false # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
   max_eprews: 0.93 # Cap training when mean episode rewards reaches this value
@@ -23,12 +23,12 @@ env_cfg:
   no_actions: 6 # 7 is for done
 
 agent:
-  name: PPORND
+  name: PPO
   frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update (default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
   optimizer: RMSprop
   optimizer_args:
-    lr: 0.00001
+    lr: 0.0007
     eps: 1.e-5
   gae_lambda: 0.95 # type=float, default=0.95, help="lambda coefficient in GAE formula (default: 0.95, 1 means no gae)")
   entropy_coef: 0.001 # type=float, default=0.01, help="entropy term coefficient (default: 0.01)")
@@ -46,11 +46,11 @@ agent:
   running_norm_obs: false # normalize the observations using a running mean
 
 model:
-  name: RNDModel
+  name: Model
   recurrence: *recurrence
   min_mem: *min_mem
   text: *text
   memory_type: GRU
   use_memory: true
-
-extra_logs: [[value_ext, vE, 3f], [value_int, vI, 3f], [value_ext_loss, vE_L, 3f]]
+  k_sizes: [3, 3, 2]
+  s_sizes: [1, 1, 1]
