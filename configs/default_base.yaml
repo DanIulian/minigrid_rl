@@ -39,7 +39,7 @@ agent:
   batch_size: 1024 # type=int, default=256, help="batch size for PPO (default: 256)")
   recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
   min_mem: &min_mem 0  # If min number of recurrence to use mem
-  # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
+  # backpropagated (default: 1) If > 1, a LSTM is added to the model to have memory")
   int_coeff: 1.
   ext_coeff: 2.
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor

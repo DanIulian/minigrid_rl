@@ -1,21 +1,21 @@
 # AndreiN, 2019
 # parts from https://github.com/lcswillems/torch-rl
 
+import os
 import gym
 import time
-import datetime
 import torch
 import sys
-# from liftoff.config import read_config
+import random
 from argparse import Namespace
 import numpy as np
-from typing import List
-
+from typing import List, Any, Callable
 
 try:
     import gym_minigrid
 except ImportError:
-    pass
+    print("Can not import MiniGrid-ENV")
+    exit(0)
 
 import utils
 from models import get_model
@@ -25,7 +25,14 @@ from utils import gym_wrappers
 MAIN_CFG_ARGS = ["main", "env_cfg", "agent", "model"]
 
 
-def add_to_cfg(cfg: Namespace, subgroups: List[str], new_arg: str, new_arg_value) -> None:
+######################################################################################################
+################################    Auxiliary methods    #############################################
+######################################################################################################
+
+
+def add_to_cfg(cfg: Namespace, subgroups: List[str], new_arg: str, new_arg_value: Any) -> None:
+    ''' Add the new_arg with new_arg_value to each subgroup of cfg (cfg contains multiple Namespaces)
+    '''
     for arg in subgroups:
         if hasattr(cfg, arg):
             setattr(getattr(cfg, arg), new_arg, new_arg_value)
@@ -35,19 +42,81 @@ def post_process_args(args: Namespace) -> None:
     args.mem = args.recurrence > args.min_mem
 
 
-def extra_log_fields(header: list, log_keys: list) ->list:
+def extra_log_fields(header: list, log_keys: list) -> list:
+    '''Filter log fields to be displayed
+    '''
     unusable_fields = ['return_per_episode', 'reshaped_return_per_episode',
                        'num_frames_per_episode', 'num_frames']
-    extra_fields = []
-    for field in log_keys:
-        if field not in header and field not in unusable_fields:
-            extra_fields.append(field)
 
-    return extra_fields
+    def filter_clause_(x):
+        return (x not in header) and (x not in unusable_fields)
+
+    return list(filter(filter_clause_, log_keys))
 
 
-def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
-    """ Minigrid action 6 is Done - useless"""
+def print_keys(header: list, data: list, extra_logs: list = None) -> tuple:
+    basic_keys_format = \
+        "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | " \
+        "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | " \
+        "∇ {:.3f}"
+    printable_data = data[:17]
+
+    for field in extra_logs:
+        if field[0] in header:
+            basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
+            printable_data.append(data[header.index(field[0])])
+
+    return basic_keys_format, printable_data
+
+
+def get_envs_wrapper(env_cfg: Namespace) ->Callable:
+    '''Return the env wrapper function
+    '''
+    # Get env wrappers - must be a list of elements
+    wrapper_method = getattr(env_cfg, "wrapper", None)
+    if wrapper_method is None:
+        def idem_(x):
+            return x
+
+        env_wrapper = idem_
+    else:
+        env_wrappers = [getattr(gym_wrappers, w_p) for w_p in wrapper_method]
+        def env_wrapp_(w_env):
+            for wrapper in reversed(env_wrappers):
+                w_env = wrapper(w_env)
+            return w_env
+
+        env_wrapper = env_wrapp_
+
+    return env_wrapper
+
+
+def obs_preprocess(env_cfg: Namespace, main_cfg, observation_space):
+    # Define obss preprocessor
+    max_image_value = full_args.env_cfg.max_image_value
+    normalize_img = full_args.env_cfg.normalize
+    permute = getattr(full_args.env_cfg, "permute", False)
+    obss_preprocessor = getattr(full_args.env_cfg, "obss_preprocessor", None)
+    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
+                                                             model_dir,
+                                                             max_image_value=max_image_value,
+                                                             normalize=normalize_img,
+                                                             permute=permute,
+                                                             type=obss_preprocessor)
+
+
+
+######################################################################################################
+
+
+def get_envs(full_args: Namespace, env_wrapper: Callable, no_envs: int, n_actions: int = 6) -> tuple:
+    """ Minigrid action 6 is Done - useless
+
+    Create the envs with specified properties.
+    @:returns: A tuple with the first element a list of envs,
+               the second number of envs on each process
+    """
+
     envs = []
     args = full_args.main
     actual_procs = args.actual_procs
@@ -55,8 +124,13 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
 
     env_args = getattr(full_args.env_cfg, "env_args", None)
     env_args = dict() if env_args is None else vars(env_args)
-    print(env_args)
+    print("Environment arguments: {}".format(env_args))
 
+    '''Configure generic environment properties:
+        - number of valid actions
+        - number of max steps per episode
+        - process id
+    '''
     env = gym.make(args.env, **env_args)
     env.action_space.n = n_actions
     env.max_steps = full_args.env_cfg.max_episode_steps
@@ -65,6 +139,7 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
     env.seed(args.seed + 10000 * 0)
 
     envs.append([env])
+    # split total number of environments per available processes
     chunk_size = int(np.ceil((no_envs - 1) / float(actual_procs)))
     for env_i in range(1, no_envs, chunk_size):
         env_chunk = []
@@ -82,35 +157,35 @@ def get_envs(full_args, env_wrapper, no_envs, n_actions=6):
     return envs, chunk_size
 
 
-def print_keys(header: list, data: list, extra_logs: list = None) ->tuple:
-    basic_keys_format = \
-        "U {} | F {:06} | FPS {:04.0f} | D {} | rR:μσmM {:.2f} {:.2f} {:.2f} {:.2f} | " \
-        "F:μσmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | pL {:.3f} | vL {:.3f} | "\
-        "∇ {:.3f}"
-    printable_data = data[:17]
+def get_eval_envs(full_args: Namespace, env_wrapper: Callable, no_actions: int) -> list:
+    # Generate evaluation envs
+    eval_envs = []
+    if full_args.env_cfg.no_eval_envs > 0:
+        no_envs = full_args.env_cfg.no_eval_envs
+        eval_envs, _ = get_envs(full_args, env_wrapper, no_envs, n_actions=no_actions)
 
-    if extra_logs:
-        for field in extra_logs:
-            if field[0] in header:
-                basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
-                printable_data.append(data[header.index(field[0])])
-
-    return basic_keys_format, printable_data
+    return eval_envs
 
 
 def run(full_args: Namespace, return_models: bool = False):
+    import pdb; pdb.set_trace()
     if sys.argv[0].startswith("train"):
-        import os
         full_args.out_dir = os.path.dirname(sys.argv[1])
 
+    # extract config file contents
     args = full_args.main
     agent_args = full_args.agent
     model_args = full_args.model
     extra_logs = getattr(full_args, "extra_logs", None)
     main_r_key = getattr(full_args, "main_r_key", None)
 
+    # set seed if not specified in the config file
     if args.seed == 0:
-        args.seed = full_args.run_id + 1
+        args.seed = random.randint(0, 1e6)
+
+    # Set seed for all randomness sources
+    utils.seed(args.seed)
+
     max_eprews = args.max_eprews
     max_eprews_window = getattr(args, "max_eprews_window", 1)
 
@@ -118,11 +193,9 @@ def run(full_args: Namespace, return_models: bool = False):
     post_process_args(model_args)
 
     model_dir = getattr(args, "model_dir", full_args.out_dir)
-    print(model_dir)
+    print("Experiment results are saved in {}".format(model_dir))
 
     # ==============================================================================================
-    # @ torc_rl repo original
-
     # Define logger, CSV writer and Tensorboard writer
 
     logger = utils.get_logger(model_dir)
@@ -133,13 +206,8 @@ def run(full_args: Namespace, return_models: bool = False):
         tb_writer = SummaryWriter(model_dir)
 
     # Log command and all script arguments
-
     logger.info("{}\n".format(" ".join(sys.argv)))
     logger.info("{}\n".format(args))
-
-    # ==============================================================================================
-    # Set seed for all randomness sources
-    utils.seed(args.seed)
 
     # ==============================================================================================
     # Generate environments
@@ -147,19 +215,7 @@ def run(full_args: Namespace, return_models: bool = False):
     envs = []
 
     # Get env wrappers - must be a list of elements
-    wrapper_method = getattr(full_args.env_cfg, "wrapper", None)
-    if wrapper_method is None:
-        def idem(x):
-            return x
-        env_wrapper = idem
-    else:
-        env_wrappers = [getattr(gym_wrappers, w_p) for w_p in wrapper_method]
-        def env_wrapp(w_env):
-            for wrapper in env_wrappers[::-1]:
-                w_env = wrapper(w_env)
-            return w_env
-
-        env_wrapper = env_wrapp
+    env_wrapper = get_envs_wrapper(full_args.env_cfg)
 
     actual_procs = getattr(args, "actual_procs", None)
     no_actions = getattr(full_args.env_cfg, "no_actions", 6)
@@ -180,11 +236,8 @@ def run(full_args: Namespace, return_models: bool = False):
         first_env = envs[0]
 
     # Generate evaluation envs
-    eval_envs = []
+    eval_envs = get_eval_envs(full_args, env_wrapper, no_actions)
     eval_episodes = getattr(full_args.env_cfg, "eval_episodes", 0)
-    if full_args.env_cfg.no_eval_envs > 0:
-        no_envs = full_args.env_cfg.no_eval_envs
-        eval_envs, chunk_size = get_envs(full_args, env_wrapper, no_envs, n_actions=no_actions)
 
     # Define obss preprocessor
     max_image_value = full_args.env_cfg.max_image_value
@@ -350,31 +403,6 @@ def run(full_args: Namespace, return_models: bool = False):
             print(f"Reached mean return {max_eprews} for a window of {max_eprews_window} steps")
             exit()
 
-
-def main() -> None:
-    import os
-
-    """ Read configuration from disk (the old way)"""
-    # Reading args
-    full_args = read_config()  # type: Namespace
-    args = full_args.main
-
-    if not hasattr(full_args, "run_id"):
-        full_args.run_id = 0
-
-    if hasattr(args, "model_dir"):
-        # Define run dir
-        os.environ["TORCH_RL_STORAGE"] = "results_dir"
-
-        suffix = datetime.datetime.now().strftime("%y-%m-%d-%H-%M-%S")
-        default_model_name = "{}_{}_seed{}_{}".format(args.env, args.algo, args.seed, suffix)
-        model_name = args.model or default_model_name
-        model_dir = utils.get_model_dir(model_name)
-
-        full_args.out_dir = model_dir
-        args.model_dir = model_dir
-
-    run(full_args)
 
 
 if __name__ == "__main__":
