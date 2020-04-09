@@ -1,5 +1,5 @@
 import torch
-
+import torch.nn as nn
 
 # Function from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
 def initialize_parameters(m):
@@ -20,4 +20,31 @@ def initialize_parameters2(m):
 
     :param m: The NN model
     '''
-    pass
+
+    def init_(module, weight_init, bias_init, gain=1):
+        weight_init(module.weight.data, gain=gain)
+        bias_init(module.bias.data)
+
+    def conv_init_(m):
+        init_(m, nn.init.orthogonal_,
+              lambda x: nn.init.constant_(x, 0), nn.init.calculate_gain('relu'))
+
+    def linear_init_(m):
+        init_(m, nn.init.orthogonal_,
+              lambda x: nn.init.constant_(x, 0))
+
+    def recurrent_init_(m):
+        for name, param in m.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+    classname = m.__class__.__name__
+
+    if classname.find("Conv2d") != -1:
+        conv_init_(m)
+    elif classname.find("Linear") != -1:
+        linear_init_(m)
+    elif classname.find("LSTMCell") != -1 or classname.find("GRUCell") != -1:
+        recurrent_init_(m)

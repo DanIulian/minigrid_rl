@@ -3,13 +3,13 @@
 
 import numpy as np
 import torch
+import torch_rl
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
-import torch_rl
-from typing import Optional, Tuple
 
-from models.utils import initialize_parameters
+from typing import Optional, Tuple
+from models.utils import initialize_parameters, initialize_parameters2
 
 
 class Model(nn.Module, torch_rl.RecurrentACModel):
@@ -29,8 +29,8 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         self.mem_size = getattr(cfg, "memory_size", 128)
 
         hidden_size = getattr(cfg, "hidden_size", 128)  # feature size after CNN processing
-        k_sizes = getattr(cfg, "k_sizes", [5, 5, 3])    # kernel size for each layer
-        s_sizes = getattr(cfg, "s_sizes", [3, 3, 1])    # stride size for each layer
+        k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
+        s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
 
         # Decide which components are enabled
         self.use_memory = use_memory
@@ -40,6 +40,7 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
             nn.Conv2d(3, 16, k_sizes[0], s_sizes[0]),
             #nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
             nn.Conv2d(16, 32, k_sizes[1], s_sizes[1]),
             #nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
@@ -76,11 +77,11 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
 
         self.fc2_val = nn.Sequential(
             nn.Linear(self.embedding_size, self.mem_size),
-            nn.ReLU(inplace=True),
+            nn.Tanh(),
         )
         self.fc2_act = nn.Sequential(
             nn.Linear(self.embedding_size, self.mem_size),
-            nn.ReLU(inplace=True),
+            nn.Tanh(),
         )
 
         # Define action and value heads
@@ -88,7 +89,7 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         self.pd = nn.Linear(self.mem_size, action_space.n)
 
         # Initialize parameters correctly
-        self.apply(initialize_parameters)
+        self.apply(initialize_parameters2)
 
     @property
     def memory_size(self):

@@ -21,7 +21,7 @@ class PPO(BaseAlgov2):
         value_loss_coef = getattr(cfg, "value_loss_coef", 0.5)
         max_grad_norm = getattr(cfg, "max_grad_norm", 0.5)
         recurrence = getattr(cfg, "recurrence", 4)
-        clip_eps = getattr(cfg, "clip_eps", 0.)
+        clip_eps = getattr(cfg, "clip_eps", 0.2)
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
         log_metrics_names = getattr(cfg, "log_metrics", [])
@@ -108,15 +108,15 @@ class PPO(BaseAlgov2):
                 batch_policy_loss = 0
                 batch_value_loss = 0
                 batch_loss = 0
+                batch_kl = 0
 
                 # Initialize memory
-
                 if self.acmodel.recurrent:
                     memory = exps.memory[inds]
 
                 for i in range(self.recurrence):
                     # Create a sub-batch of experience
-
+                    # inds is an array of batch_size // recurrence containing indexes of obs
                     sb = exps[inds + i]
 
                     # Compute loss
@@ -133,6 +133,8 @@ class PPO(BaseAlgov2):
                     surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * sb.advantage
                     policy_loss = -torch.min(surr1, surr2).mean()
 
+                    approx_kl = (sb.log_prob - dist.log_prob(sb.action)).mean()
+
                     value_clipped = sb.value + torch.clamp(value - sb.value, -self.clip_eps, self.clip_eps)
                     surr1 = (value - sb.returnn).pow(2)
                     surr2 = (value_clipped - sb.returnn).pow(2)
@@ -146,6 +148,7 @@ class PPO(BaseAlgov2):
                     batch_value += value.mean().item()
                     batch_policy_loss += policy_loss.item()
                     batch_value_loss += value_loss.item()
+                    batch_kl += approx_kl.item()
                     batch_loss += loss
 
                     # Update memories for next epoch
@@ -159,6 +162,7 @@ class PPO(BaseAlgov2):
                 batch_value /= self.recurrence
                 batch_policy_loss /= self.recurrence
                 batch_value_loss /= self.recurrence
+                batch_kl /= self.recurrence
                 batch_loss /= self.recurrence
 
                 # Update actor-critic
@@ -176,6 +180,10 @@ class PPO(BaseAlgov2):
                 log_policy_losses.append(batch_policy_loss)
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm)
+
+                #if batch_kl > 1.5 * 0.01:
+                #    print("Stop optimizing, batch_kl {}".format(batch_kl))
+                #    break
 
         # Log some values
 
@@ -200,16 +208,13 @@ class PPO(BaseAlgov2):
         batches_starting_indexes : list of list of int
             the indexes of the experiences to be used at first for each batch
         """
-
         indexes = numpy.arange(0, self.num_frames, self.recurrence)
         indexes = numpy.random.permutation(indexes)
 
         # Shift starting indexes by self.recurrence//2 half the time
-        # if self.batch_num % 2 == 1:
-        #     indexes = indexes[(indexes + self.recurrence) % self.num_frames_per_proc != 0]
-        #     indexes += self.recurrence // 2
         self.batch_num += 1
 
+        # make a list of arrays, where each array contains num_indexes elements(batch_size if no recurrence)
         num_indexes = self.batch_size // self.recurrence
         batches_starting_indexes = [indexes[i:i + num_indexes] for i in range(0, len(indexes), num_indexes)]
 
@@ -258,6 +263,7 @@ class PPO(BaseAlgov2):
         num_envs_results = 0
         log_reshaped_return = []
 
+        import pdb; pdb.set_trace()
         while num_envs_results < eval_episodes:
 
             preprocessed_obs = preprocess_obss(obs, device=device)

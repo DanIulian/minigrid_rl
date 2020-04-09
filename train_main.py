@@ -9,7 +9,7 @@ import sys
 import random
 from argparse import Namespace
 import numpy as np
-from typing import List, Any, Callable
+from typing import List, Any, Callable, Tuple
 
 try:
     import gym_minigrid
@@ -91,19 +91,54 @@ def get_envs_wrapper(env_cfg: Namespace) ->Callable:
     return env_wrapper
 
 
-def obs_preprocess(env_cfg: Namespace, main_cfg, observation_space):
+def obs_preprocess(env_cfg: Namespace, main_cfg: Namespace, observation_space, model_dir) -> tuple:
     # Define obss preprocessor
-    max_image_value = full_args.env_cfg.max_image_value
-    normalize_img = full_args.env_cfg.normalize
-    permute = getattr(full_args.env_cfg, "permute", False)
-    obss_preprocessor = getattr(full_args.env_cfg, "obss_preprocessor", None)
-    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
+    max_image_value = env_cfg.max_image_value
+    normalize_img = env_cfg.normalize
+    permute = getattr(env_cfg, "permute", False)
+    obss_preprocessor = getattr(env_cfg, "obss_preprocessor", None)
+    obs_space, preprocess_obss = utils.get_obss_preprocessor(main_cfg.env, observation_space,
                                                              model_dir,
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img,
                                                              permute=permute,
                                                              type=obss_preprocessor)
+    return obs_space, preprocess_obss
 
+
+def get_training_logs(logs: dict,
+                        loop_duration: tuple,
+                        init_time: float,
+                        num_frames: int,
+                        update: int) -> Tuple[list, list]:
+
+    update_start_time, prev_start_time = loop_duration
+
+    fps = logs["num_frames"] / (update_start_time - prev_start_time)
+    duration = int(time.time() - init_time)
+
+    rreturn_per_episode = utils.synthesize(logs["reshaped_return_per_episode"])
+    num_frames_per_episode = utils.synthesize(logs["num_frames_per_episode"])
+
+    # Logs printed during training
+    header = ["update", "frames", "FPS", "duration"]
+    data = [update, num_frames, fps, duration]
+
+    header += ["rreturn_" + key for key in rreturn_per_episode.keys()]
+    data += rreturn_per_episode.values()
+
+    header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
+    data += num_frames_per_episode.values()
+
+    header += ["entropy", "value", "policy_loss", "value_loss", "grad_norm"]
+    data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"], logs["grad_norm"]]
+
+    # add log fields that are not in the standard log format (for example value_int)
+    extra_fields = extra_log_fields(header, list(logs.keys()))
+    header.extend(extra_fields)
+    data += [logs[field] for field in extra_fields]
+
+    return header, data
 
 
 ######################################################################################################
@@ -167,8 +202,23 @@ def get_eval_envs(full_args: Namespace, env_wrapper: Callable, no_actions: int) 
     return eval_envs
 
 
+def add_extra_info_to_config(first_obs: dict, full_args: Namespace) -> None:
+    ''' Add extra info to config Namespace for additional performance monitoring
+    '''
+
+    if "state" in first_obs:
+        full_state_size = first_obs["state"].shape
+        # Add full size shape
+        add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
+
+    if "position" in first_obs:
+        position_size = first_obs["position"].shape
+
+        # Add full size shape
+        add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
+
+
 def run(full_args: Namespace, return_models: bool = False):
-    import pdb; pdb.set_trace()
     if sys.argv[0].startswith("train"):
         full_args.out_dir = os.path.dirname(sys.argv[1])
 
@@ -176,7 +226,7 @@ def run(full_args: Namespace, return_models: bool = False):
     args = full_args.main
     agent_args = full_args.agent
     model_args = full_args.model
-    extra_logs = getattr(full_args, "extra_logs", None)
+    extra_logs = getattr(full_args, "extra_logs", [])
     main_r_key = getattr(full_args, "main_r_key", None)
 
     # set seed if not specified in the config file
@@ -240,29 +290,13 @@ def run(full_args: Namespace, return_models: bool = False):
     eval_episodes = getattr(full_args.env_cfg, "eval_episodes", 0)
 
     # Define obss preprocessor
-    max_image_value = full_args.env_cfg.max_image_value
-    normalize_img = full_args.env_cfg.normalize
-    permute = getattr(full_args.env_cfg, "permute", False)
-    obss_preprocessor = getattr(full_args.env_cfg, "obss_preprocessor", None)
-    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, first_env.observation_space,
-                                                             model_dir,
-                                                             max_image_value=max_image_value,
-                                                             normalize=normalize_img,
-                                                             permute=permute,
-                                                             type=obss_preprocessor)
+    obs_space, preprocess_obss = obs_preprocess(full_args.env_cfg,
+                                                args,
+                                                first_env.observation_space,
+                                                model_dir)
 
     first_obs = first_env.reset()
-    if "state" in first_obs:
-        full_state_size = first_obs["state"].shape
-
-        # Add full size shape
-        add_to_cfg(full_args, MAIN_CFG_ARGS, "full_state_size", full_state_size)
-
-    if "position" in first_obs:
-        position_size = first_obs["position"].shape
-
-        # Add full size shape
-        add_to_cfg(full_args, MAIN_CFG_ARGS, "position_size", position_size)
+    add_extra_info_to_config(first_obs, full_args)
 
     # Add the width and height of environment for position estimation
     model_args.width = first_env.unwrapped.width
@@ -276,7 +310,7 @@ def run(full_args: Namespace, return_models: bool = False):
         status = {"num_frames": 0, "update": 0}
 
     saver = utils.SaveData(model_dir, save_best=args.save_best, save_all=args.save_all)
-    model, agent_data, other_data = None, dict(), None
+    model, agent_data, other_data = None, dict(), dict()
     try:
         # Continue from last point
         model, agent_data, other_data = saver.load_training_data(best=False)
@@ -331,40 +365,28 @@ def run(full_args: Namespace, return_models: bool = False):
         num_frames += logs["num_frames"]
         update += 1
 
-        if update % args.eval_interval == 0 and has_evaluator:
-            eval_logs = algo.evaluate(eval_key=main_r_key)
-            logs.update(eval_logs)
+        #if update % args.eval_interval == 0 and has_evaluator:
+        #    eval_logs = algo.evaluate(eval_key=main_r_key)
+        #    logs.update(eval_logs)
 
         prev_start_time = update_start_time
         update_start_time = time.time()
 
         # Print logs
         if update % args.log_interval == 0:
-            fps = logs["num_frames"] / (update_start_time - prev_start_time)
-            duration = int(time.time() - total_start_time)
-            return_per_episode = utils.synthesize(logs["return_per_episode"])
-            rreturn_per_episode = utils.synthesize(logs["reshaped_return_per_episode"])
-            num_frames_per_episode = utils.synthesize(logs["num_frames_per_episode"])
 
-            header = ["update", "frames", "FPS", "duration"]
-            data = [update, num_frames, fps, duration]
-            header += ["rreturn_" + key for key in rreturn_per_episode.keys()]
-            data += rreturn_per_episode.values()
-            header += ["num_frames_" + key for key in num_frames_per_episode.keys()]
-            data += num_frames_per_episode.values()
-            header += ["entropy", "value", "policy_loss", "value_loss"]
-            data += [logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"]]
-            header += ["grad_norm"]
-            data += [logs["grad_norm"]]
-
-            # add log fields that are not in the standard log format (for example value_int)
-            extra_fields = extra_log_fields(header, list(logs.keys()))
-            header.extend(extra_fields)
-            data += [logs[field] for field in extra_fields]
+            header, data = get_training_logs(logs,
+                                             (update_start_time, prev_start_time),
+                                             total_start_time,
+                                             num_frames,
+                                             update)
 
             # print to stdout the standard log fields + fields required in config
             keys_format, printable_data = print_keys(header, data, extra_logs)
             logger.info(keys_format.format(*printable_data))
+
+            return_per_episode = utils.synthesize(logs["return_per_episode"])
+            rreturn_per_episode = utils.synthesize(logs["reshaped_return_per_episode"])
 
             header += ["return_" + key for key in return_per_episode.keys()]
             data += return_per_episode.values()
@@ -374,6 +396,7 @@ def run(full_args: Namespace, return_models: bool = False):
             csv_writer.writerow(data)
             csv_file.flush()
 
+            # if tensorboardX is used
             if args.tb:
                 for field, value in zip(header, data):
                     tb_writer.add_scalar(field, value, num_frames)
@@ -388,7 +411,6 @@ def run(full_args: Namespace, return_models: bool = False):
                 prev_rewards.append(logs[main_r_key])
 
         # -- Save vocabulary and model
-
         if args.save_interval > 0 and update % args.save_interval == 0:
             preprocess_obss.vocab.save()
 
@@ -398,10 +420,11 @@ def run(full_args: Namespace, return_models: bool = False):
 
             utils.save_status(status, model_dir)
 
+        # if agent obtained a mean reward greater than max_eprews then stop training
         check_rew = np.mean(prev_rewards[-max_eprews_window:])
         if len(prev_rewards) > max_eprews_window and check_rew > max_eprews:
             print(f"Reached mean return {max_eprews} for a window of {max_eprews_window} steps")
-            exit()
+            break
 
 
 

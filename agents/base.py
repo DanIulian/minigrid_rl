@@ -72,7 +72,6 @@ class BaseAlgo(ABC):
         self.reshape_reward = reshape_reward
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.acmodel.to(self.device)
         self.acmodel.train()
 
         # Initialize episode statistics values
@@ -156,7 +155,7 @@ class BaseAlgo(ABC):
 
             # Update experiences values
             self.obss[i] = self.obs
-            self.obs = obs
+            self.obs = obs                     # New observations
             if self.acmodel.recurrent:
                 self.memories[i] = self.memory
                 self.memory = memory
