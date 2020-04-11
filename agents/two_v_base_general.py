@@ -4,139 +4,40 @@
 
 from abc import ABC, abstractmethod
 import torch
-import numpy
 from copy import deepcopy
 
+from agents.base import BaseAlgo
 from torch_rl.format import default_preprocess_obss
 from torch_rl.utils import DictList, ParallelEnv
 from utils.gym_wrappers import get_interactions_stats
 
 
-class TwoValueHeadsBaseGeneral(ABC):
+class TwoValueHeadsBaseGeneral(BaseAlgo):
     """The base class for RL algorithms."""
 
-    def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
+    def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                 exp_used_pred, min_stats_ep_batch=16):
-        """
-        Initializes a `BaseAlgo` instance.
+                 exp_used_pred, min_stats_ep_batch=16, log_metrics_names=None):
 
-        Parameters:
-        ----------
-        envs : list
-            a list of environments that will be run in parallel
-        acmodel : torch.Module
-            the model
-        num_frames_per_proc : int
-            the number of frames collected by every process for an update
-        discount : float
-            the discount for future rewards
-        lr : float
-            the learning rate for optimizers
-        gae_lambda : float
-            the lambda coefficient in the GAE formula
-            ([Schulman et al., 2015](https://arxiv.org/abs/1506.02438))
-        entropy_coef : float
-            the weight of the entropy cost in the final objective
-        value_loss_coef : float
-            the weight of the value loss in the final objective
-        max_grad_norm : float
-            gradient will be clipped to be at most this value
-        recurrence : int
-            the number of steps the gradient is propagated back in time
-        preprocess_obss : function
-            a function that takes observations returned by the environment
-            and converts them into the format that the model can handle
-        reshape_reward : function
-            a function that shapes the reward, takes an
-            (observation, action, reward, done) tuple as an input
-        exp_used_pred : float
-            the proportion of experience used for training predictor
-        """
+        super(TwoValueHeadsBaseGeneral, self).__init__(
+            envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda,
+            entropy_coef, value_loss_coef, max_grad_norm, recurrence, preprocess_obss,
+            reshape_reward, min_stats_ep_batch, log_metrics_names)
 
-        # Store parameters
-
-        self.env = ParallelEnv(envs)
-        self.acmodel = acmodel
-        self.acmodel.train()
-        self.num_frames_per_proc = num_frames_per_proc
-        self.discount = discount
-        self.gae_lambda = gae_lambda
-        self.entropy_coef = entropy_coef
-        self.value_loss_coef = value_loss_coef
-        self.max_grad_norm = max_grad_norm
-        self.recurrence = recurrence
-        self.preprocess_obss = preprocess_obss or default_preprocess_obss
-        self.reshape_reward = reshape_reward
-        self.exp_used_pred = exp_used_pred
-
-        # Initialize episode statistics values
-        self._finished_episodes = 0
-        self._ep_statistics = []
-        self._min_stats_ep_batch = min_stats_ep_batch
-
-        # Store helpers values
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.num_procs = sum(map(len, envs)) if isinstance(envs[0], list) else len(envs)
-        self.num_frames = self.num_frames_per_proc * self.num_procs
-
-        # Control parameters
-
-        assert self.acmodel.recurrent or self.recurrence == 1
-        assert self.num_frames_per_proc % self.recurrence == 0
-
-        # Initialize experience values
-
+        # Initialize experiences values for intrinsic rewards
         shape = (self.num_frames_per_proc, self.num_procs)
-
-        self.obs = self.env.reset()
-        self.obss = [None]*(shape[0])
-        if self.acmodel.recurrent:
-            self.memory = torch.zeros(shape[1], self.acmodel.memory_size, device=self.device)
-            self.memories = torch.zeros(*shape, self.acmodel.memory_size, device=self.device)
-        self.mask = torch.ones(shape[1], device=self.device)
-        self.masks = torch.zeros(*shape, device=self.device)
-        self.actions = torch.zeros(*shape, device=self.device, dtype=torch.int)
-        self.values_ext = torch.zeros(*shape, device=self.device)
+        self.exp_used_pred = exp_used_pred
         self.values_int = torch.zeros(*shape, device=self.device)
-        self.rewards_ext = torch.zeros(*shape, device=self.device)
         self.rewards_int = torch.zeros(*shape, device=self.device)
-        self.advantages_ext = torch.zeros(*shape, device=self.device)
         self.advantages_int = torch.zeros(*shape, device=self.device)
-        self.log_probs = torch.zeros(*shape, device=self.device)
-
-        # Initialize log values
-
-        self.log_episode_return = torch.zeros(self.num_procs, device=self.device)
-        self.log_episode_reshaped_return = torch.zeros(self.num_procs, device=self.device)
-        self.log_episode_num_frames = torch.zeros(self.num_procs, device=self.device)
-
-        self.log_done_counter = 0
-        self.log_return = [0] * self.num_procs
-        self.log_reshaped_return = [0] * self.num_procs
-        self.log_num_frames = [0] * self.num_procs
 
     def collect_experiences(self):
-        """Collects rollouts and computes advantages.
-
-        Runs several environments concurrently. The next actions are computed
-        in a batch mode for all environments at the same time. The rollouts
-        and advantages from all environments are concatenated together.
+        """Collects rollouts and computes advantages. See base class for more info
 
         Returns
         -------
         exps : DictList
-            Contains actions, rewards, advantages etc as attributes.
-            Each attribute, e.g. `exps.reward` has a shape
-            (self.num_frames_per_proc * num_envs, ...). k-th block
-            of consecutive `self.num_frames_per_proc` frames contains
-            data obtained from the k-th environment. Be careful not to mix
-            data from different environments!
         logs : dict
-            Useful stats about the training process, including the average
-            reward, policy loss, value loss, etc.
         """
         for i in range(self.num_frames_per_proc):
             # Do one agent-environment interaction
@@ -154,42 +55,11 @@ class TwoValueHeadsBaseGeneral(ABC):
             self.collect_interactions(info)
 
             # Update experiences values
-            self.obss[i] = self.obs
-            self.obs = obs
-            if self.acmodel.recurrent:
-                self.memories[i] = self.memory
-                self.memory = memory
-            self.masks[i] = self.mask
-            self.mask = 1 - torch.tensor(done, device=self.device, dtype=torch.float)
-            self.actions[i] = action
-            self.values_ext[i] = value[0]
-            self.values_int[i] = value[1]
-            if self.reshape_reward is not None:
-                self.rewards_ext[i] = torch.tensor([
-                    self.reshape_reward(obs_, action_, reward_, done_)
-                    for obs_, action_, reward_, done_ in zip(obs, action, reward, done)
-                ], device=self.device)
-            else:
-                self.rewards_ext[i] = torch.tensor(reward, device=self.device)
-
+            self.update_experience_values(obs, action, reward, done, memory, value, i)
             self.log_probs[i] = dist.log_prob(action)
 
             # Update log values
-
-            self.log_episode_return += torch.tensor(reward, device=self.device, dtype=torch.float)
-            self.log_episode_reshaped_return += self.rewards_ext[i]
-            self.log_episode_num_frames += torch.ones(self.num_procs, device=self.device)
-
-            for i, done_ in enumerate(done):
-                if done_:
-                    self.log_done_counter += 1
-                    self.log_return.append(self.log_episode_return[i].item())
-                    self.log_reshaped_return.append(self.log_episode_reshaped_return[i].item())
-                    self.log_num_frames.append(self.log_episode_num_frames[i].item())
-
-            self.log_episode_return *= self.mask
-            self.log_episode_reshaped_return *= self.mask
-            self.log_episode_num_frames *= self.mask
+            self.update_log_values(reward, done, i)
 
         # ==========================================================================================
         # Define experiences: ---> for observations
@@ -220,13 +90,55 @@ class TwoValueHeadsBaseGeneral(ABC):
         self.rewards_int = self.calculate_intrinsic_reward(exps, self.rewards_int)
 
         # Add advantage and return to experiences
-        # don;t use end of episode signal for intrinsic rewards
+        # don't use end of episode signal for intrinsic rewards
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
             if self.acmodel.recurrent:
                 _, next_value, _ = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
             else:
                 _, next_value = self.acmodel(preprocessed_obs)
+
+        # Compute advantages
+        self.compute_advantages(next_value)
+
+        # Log some values
+        keep = max(self.log_done_counter, self.num_procs)
+
+        log = {
+            "return_per_episode": self.log_return[-keep:],
+            "reshaped_return_per_episode": self.log_reshaped_return[-keep:],
+            "num_frames_per_episode": self.log_num_frames[-keep:],
+            "num_frames": self.num_frames
+        }
+
+        # =====================================================================================
+        aux_logs = self.process_interactions()
+        # add extra logs with agent interactions
+        for k in aux_logs:
+            log[k] = aux_logs[k]
+        # =====================================================================================
+
+        self.log_done_counter = 0
+        self.log_return = self.log_return[-self.num_procs:]
+        self.log_reshaped_return = self.log_reshaped_return[-self.num_procs:]
+        self.log_num_frames = self.log_num_frames[-self.num_procs:]
+
+        return exps, log
+
+    def update_experience_values(self, curr_obs, curr_act, curr_reward,
+                                 curr_done, curr_memory, curr_value, curr_step):
+
+        super(TwoValueHeadsBaseGeneral, self).update_experience_values(
+            curr_obs, curr_act, curr_reward, curr_done,
+            curr_memory, curr_value[0], curr_step
+        )
+
+        self.values_int[curr_step] = curr_value[1]
+
+    def compute_advantages(self, next_value):
+
+        # Calculate extrinisc rewards and advantages
+        super(TwoValueHeadsBaseGeneral, self).compute_advantages(next_value[0])
 
         # Calculate intrinsic rewards and advantages
         for i in reversed(range(self.num_frames_per_proc)):
@@ -236,25 +148,14 @@ class TwoValueHeadsBaseGeneral(ABC):
             delta = self.rewards_int[i] + self.discount * next_value_int - self.values_int[i]
             self.advantages_int[i] = delta + self.discount * self.gae_lambda * next_advantage_int
 
-        # Calculate extrinisc rewards and advantages
-        for i in reversed(range(self.num_frames_per_proc)):
-            next_mask = self.masks[i+1] if i < self.num_frames_per_proc - 1 else self.mask
+    def update_log_values(self, reward, done, step):
+        super(TwoValueHeadsBaseGeneral, self).update_log_values(reward, done, step)
 
-            next_value_ext = self.values_ext[i+1] if i < self.num_frames_per_proc - 1 else next_value[0]
-            next_advantage_ext = self.advantages_ext[i+1] if i < self.num_frames_per_proc - 1 else 0
-
-            delta = self.rewards_ext[i] + self.discount * next_value_ext * next_mask - self.values_ext[i]
-            self.advantages_ext[i] = delta + self.discount * self.gae_lambda * next_advantage_ext * next_mask
-
-        # ==========================================================================================
-        # @ continue Define experiences:
-        #   the whole experience is the concatenation of the experience
-        #   of each process.
+    def get_experiences(self, exps):
         # In comments below:
         #   - T is self.num_frames_per_proc,
         #   - P is self.num_procs,
         #   - D is the dimensionality.
-
 
         # for all tensors below, T x P -> P x T -> P * T
         exps.value_ext = self.values_ext.transpose(0, 1).reshape(-1)
@@ -267,51 +168,14 @@ class TwoValueHeadsBaseGeneral(ABC):
         exps.returnn_int = exps.value_int + exps.advantage_int
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
-        # Log some values
-
-        keep = max(self.log_done_counter, self.num_procs)
-
-        log = {
-            "return_per_episode": self.log_return[-keep:],
-            "reshaped_return_per_episode": self.log_reshaped_return[-keep:],
-            "num_frames_per_episode": self.log_num_frames[-keep:],
-            "num_frames": self.num_frames
-        }
-
-        aux_logs = self.process_interactions()
-        # add extra logs with agent interactions
-        for k in aux_logs:
-            log[k] = aux_logs[k]
-
-        self.log_done_counter = 0
-        self.log_return = self.log_return[-self.num_procs:]
-        self.log_reshaped_return = self.log_reshaped_return[-self.num_procs:]
-        self.log_num_frames = self.log_num_frames[-self.num_procs:]
-
-        return exps, log
-
     def collect_interactions(self, info):
-
-        # collect all end-of-episode statistics about environment
-        for env_info in info:
-            if len(env_info) > 0:
-                self._finished_episodes += 1
-                self._ep_statistics.append(deepcopy(env_info))
+        super(TwoValueHeadsBaseGeneral, self).collect_experiences(info)
 
     def process_interactions(self):
 
         # process statistics about the agent's behaviour
         # in the environment
-
-        if self._finished_episodes < self._min_stats_ep_batch:
-            return get_interactions_stats([])
-        else:
-            logs = get_interactions_stats(self._ep_statistics)
-
-        # reset statistics
-        self._finished_episodes = 0
-        self._ep_statistics = []
-
+        logs = super(TwoValueHeadsBaseGeneral, self).process_interactions()
         return logs
 
     @abstractmethod
@@ -328,9 +192,3 @@ class TwoValueHeadsBaseGeneral(ABC):
 
     def add_extra_experience(self, exps: DictList):
         return
-
-    def evaluate(self):
-        return None
-
-
-

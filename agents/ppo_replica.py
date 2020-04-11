@@ -129,15 +129,15 @@ class PPO(BaseAlgov2):
                     entropy = dist.entropy().mean()
 
                     ratio = torch.exp(dist.log_prob(sb.action) - sb.log_prob)
-                    surr1 = ratio * sb.advantage
-                    surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * sb.advantage
+                    surr1 = ratio * sb.advantage_ext
+                    surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * sb.advantage_ext
                     policy_loss = -torch.min(surr1, surr2).mean()
 
                     approx_kl = (sb.log_prob - dist.log_prob(sb.action)).mean()
 
-                    value_clipped = sb.value + torch.clamp(value - sb.value, -self.clip_eps, self.clip_eps)
-                    surr1 = (value - sb.returnn).pow(2)
-                    surr2 = (value_clipped - sb.returnn).pow(2)
+                    value_clipped = sb.value_ext + torch.clamp(value - sb.value_ext, -self.clip_eps, self.clip_eps)
+                    surr1 = (value - sb.returnn_ext).pow(2)
+                    surr2 = (value_clipped - sb.returnn_ext).pow(2)
                     value_loss = torch.max(surr1, surr2).mean()
 
                     loss = policy_loss - self.entropy_coef * entropy + self.value_loss_coef * value_loss
