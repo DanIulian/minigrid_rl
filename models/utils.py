@@ -48,3 +48,17 @@ def initialize_parameters2(m):
         linear_init_(m)
     elif classname.find("LSTMCell") != -1 or classname.find("GRUCell") != -1:
         recurrent_init_(m)
+
+
+def initialize_parameters_ec(m):
+    '''Episodic curiosity RNetwork weight initialization
+    :param m: The NN model
+    '''
+    classname = m.__class__.__name__
+
+    if classname.find("Conv2d") != -1:
+        nn.init.kaiming_normal(m.weight.data, mode='fan_in', nonlinearity='relu')
+        nn.init.constant(m.bias.data, 0)
+    elif classname.find("Linear") != -1:
+        nn.init.kaiming_normal(m.weight.data, mode='fan_in', nonlinearity='relu')
+        nn.init.constant(m.bias.data, 0)

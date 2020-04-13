@@ -3,6 +3,7 @@ from . import model_replica
 from . import model_worlds
 from . import model_icm_like
 from . import model_prediction_error
+from . import model_episodic_curiosity
 
 MODELS = {
     "RNDModel": model_rnd_like.RNDModels,
@@ -10,6 +11,7 @@ MODELS = {
     "WorldsModels": model_worlds.WorldsModels,
     "ICMModel": model_icm_like.ICMModel,
     "PEModel": model_prediction_error.PEModel,
+    "EpisodicCuriosityModel": model_episodic_curiosity.EpisodicCuriosityModel,
 }
 
 
