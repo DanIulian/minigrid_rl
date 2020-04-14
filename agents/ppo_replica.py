@@ -5,7 +5,7 @@
 import numpy
 import torch
 from agents.base_algo_v2 import BaseAlgov2
-
+from torch_rl.utils import ParallelEnv
 
 class PPO(BaseAlgov2):
     """The class for the Proximal Policy Optimization algorithm
@@ -43,6 +43,7 @@ class PPO(BaseAlgov2):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
+        envs = ParallelEnv(envs)
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, optimizer_args.lr, gae_lambda,
             entropy_coef, value_loss_coef, max_grad_norm, recurrence, preprocess_obss,

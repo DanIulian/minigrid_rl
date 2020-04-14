@@ -58,7 +58,7 @@ class BaseAlgo(ABC):
         """
 
         # Store parameters
-        self.env = ParallelEnv(envs)
+        self.env = envs
         self.acmodel = acmodel
         self.num_frames_per_proc = num_frames_per_proc
         self.discount = discount

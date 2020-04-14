@@ -103,7 +103,6 @@ class CuriosityEnvWrapper(ParallelEnv):
         obs, rewards, dones, infos = super(CuriosityEnvWrapper, self).step(actions)
 
         for observer in self._observers:
-            # TODO return also intrinsic rewards
             observer.on_new_observation(obs, rewards, dones, infos)
 
         self._step_count += 1

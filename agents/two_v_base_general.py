@@ -17,7 +17,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
 
     def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                 exp_used_pred, min_stats_ep_batch=16, log_metrics_names=None):
+                 exp_used_pred, min_stats_ep_batch=16, log_metrics_names=None, intrinsic_reward_fn = None):
 
         super(TwoValueHeadsBaseGeneral, self).__init__(
             envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda,
@@ -30,6 +30,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         self.values_int = torch.zeros(*shape, device=self.device)
         self.rewards_int = torch.zeros(*shape, device=self.device)
         self.advantages_int = torch.zeros(*shape, device=self.device)
+        self.intrinsic_reward_fn = intrinsic_reward_fn
 
     def collect_experiences(self):
         """Collects rollouts and computes advantages. See base class for more info
@@ -87,7 +88,8 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         # ==========================================================================================
 
         # -- Calculate intrinsic return
-        self.rewards_int = self.calculate_intrinsic_reward(exps, self.rewards_int)
+        if self.intrinsic_reward_fn:
+            self.rewards_int = self.intrinsic_reward_fn(exps, self.rewards_int)
 
         # Add advantage and return to experiences
         # don't use end of episode signal for intrinsic rewards

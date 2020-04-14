@@ -5,7 +5,6 @@
 import numpy as np
 import os
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from argparse import Namespace
 from copy import deepcopy
@@ -14,6 +13,7 @@ from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter
 from utils.format import preprocess_images
+from torch_rl.utils import ParallelEnv
 
 
 class PPOIcm(TwoValueHeadsBaseGeneral):
@@ -48,6 +48,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 5)
 
+        envs = ParallelEnv(envs)
         super().__init__(
             envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
