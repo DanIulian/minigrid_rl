@@ -28,32 +28,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class Const(object):
-  """Constants"""
-  MAX_ACTION_DISTANCE = 5
-  NEGATIVE_SAMPLE_MULTIPLIER = 5
-  # env
-  OBSERVATION_HEIGHT = 120
-  OBSERVATION_WIDTH = 160
-  OBSERVATION_CHANNELS = 3
-  OBSERVATION_SHAPE = (OBSERVATION_HEIGHT, OBSERVATION_WIDTH,
-                       OBSERVATION_CHANNELS)
-  # model and training
-  BATCH_SIZE = 64
-  EDGE_CLASSES = 2
-  DUMP_AFTER_BATCHES = 100
-  EDGE_MAX_EPOCHS = 2000
-  ADAM_PARAMS = {
-      'lr': 1e-04,
-      'beta_1': 0.9,
-      'beta_2': 0.999,
-      'epsilon': 1e-08,
-      'decay': 0.0
-  }
-  ACTION_REPEAT = 4
-  STORE_CHECKPOINT_EVERY_N_EPOCHS = 30
-
-
 def generate_positive_example(buffer_position,
                               next_buffer_position):
     """Generates a close enough pair of states."""
@@ -220,44 +194,55 @@ class RNetworkTrainer(object):
     """Train a R network in an online way."""
 
     def __init__(self,
+                 cfg,
                  r_model,
-                 optimizer,
                  device,
-                 preprocess_obs_fn,
-                 batch_size=64,
-                 num_epochs=6,
-                 observation_history_size=20000,
-                 training_interval=20000,
-                 training_data_type="v4"):
+                 preprocess_obs_fn):
+
+        self._batch_size = getattr(cfg, "r_net_batch_size", 64)
+        self._num_epochs = getattr(cfg, "r_net_num_epochs", 6)
+        self._observation_history_size = getattr(cfg, "r_net_observation_history_size", 20000)
+        self._training_interval = getattr(cfg, "r_net_training_interval", 20000)
+
         # The training interval is assumed to be the same as the history size
         # for invalid negative values.
-        if training_interval < 0:
-            training_interval = observation_history_size
+        if self._training_interval < 0:
+            self._training_interval = self._observation_history_size
+
+        self._training_data_type = getattr(cfg, "r_net_training_data_type", "v4")
+        self._max_action_distance = getattr(cfg, "r_net_max_action_distance", 5)
+        self._avg_num_examples_per_env_step = getattr(cfg, "r_net_avg_num_examples_per_env_step", 1)
+        self._negative_sample_multiplier = getattr(cfg, "r_net_negative_sample_multiplier", 5)
 
         self._r_model = r_model
-        self._optimizer = optimizer
         self._device = device
         self._preprocess_obs_fn = preprocess_obs_fn
 
-        self._training_interval = training_interval
-        self._batch_size = batch_size
-        self._num_epochs = num_epochs
-        self._training_data_type = training_data_type
+        # -- Prepare optimizer
+        optimizer = getattr(cfg, "r_net_optimizer", "Adam")
+        optimizer_args = getattr(cfg, "r_net_optimizer_args", {})
+        optimizer_args = vars(optimizer_args)
+        self._optimizer = getattr(torch.optim, optimizer)(self._r_model.parameters(),
+                                                          **optimizer_args)
 
         # Keeps track of the last N observations.
         # Those are used to train the R network in an online way.
-        self._fifo_observations = [None] * observation_history_size
-        self._fifo_dones = [None] * observation_history_size
+        self._fifo_observations = [None] * self._observation_history_size
+        self._fifo_dones = [None] * self._observation_history_size
         self._fifo_index = 0
         self._fifo_count = 0
 
         # Used to save checkpoints.
         self._current_epoch = 0
 
+    @property
+    def get_optimizer(self):
+        return self._optimizer
+
     def on_new_observation(self, observations, unused_rewards, dones, infos):
         """Event triggered when the environments generate a new observation."""
 
-        self._fifo_observations[self._fifo_index] = self._preprocess_obs_fn(observations)
+        self._fifo_observations[self._fifo_index] = observations
         self._fifo_dones[self._fifo_index] = dones
         self._fifo_index = (
                 (self._fifo_index + 1) % len(self._fifo_observations))
@@ -311,10 +296,7 @@ class RNetworkTrainer(object):
     def _prepare_data(self, observations, dones):
         """Generate the positive and negative pairs used to train the R network."""
 
-        max_action_distance = 5
-        avg_num_examples_per_env_step = 1
-        negative_sample_multiplier=5
-        mode = 'v2_fixed_num_training_examples'
+        mode = "v1_affect_num_training_examples"
 
         all_x1 = []
         all_x2 = []
@@ -322,15 +304,13 @@ class RNetworkTrainer(object):
         trajectories = self._split_history(observations, dones)
         for trajectory in trajectories:
             if self._training_data_type == "v4":
-                x1, x2, labels = create_training_data_from_episode_buffer_v4(trajectory,
-                                                                             max_action_distance,
-                                                                             avg_num_examples_per_env_step,
-                                                                             negative_sample_multiplier)
+                x1, x2, labels = create_training_data_from_episode_buffer_v4(
+                    trajectory, self._max_action_distance,
+                    self._avg_num_examples_per_env_step, self._negative_sample_multiplier)
             else:
-                x1, x2, labels = create_training_data_from_episode_buffer_v123(trajectory,
-                                                                               max_action_distance,
-                                                                               mode,
-                                                                               negative_sample_multiplier)
+                x1, x2, labels = create_training_data_from_episode_buffer_v123(
+                    trajectory, self._max_action_distance,
+                    mode, self._negative_sample_multiplier)
 
             all_x1.extend(x1)
             all_x2.extend(x2)
@@ -352,20 +332,18 @@ class RNetworkTrainer(object):
     def _generate_batch(self, x1, x2, labels):
         """Generate batches of data used to train the R network."""
 
-        while True:
-            # Train for one epoch.
-            sample_count = len(x1)
-            number_of_batches = sample_count // self._batch_size
+        sample_count = len(x1)
+        number_of_batches = sample_count // self._batch_size
 
-            for batch_index in range(number_of_batches):
-                from_index = batch_index * self._batch_size
-                to_index = (batch_index + 1) * self._batch_size
-                yield ([np.array(x1[from_index : to_index]),
-                        np.array(x2[from_index : to_index])],
-                        np.eye(2, dtype=np.uint8)[labels[from_index: to_index]])
+        # After each epoch, shuffle the data.
+        x1, x2, labels = self._shuffle(x1, x2, labels)
 
-            # After each epoch, shuffle the data.
-            x1, x2, labels = self._shuffle(x1, x2, labels)
+        for batch_index in range(number_of_batches):
+            from_index = batch_index * self._batch_size
+            to_index = (batch_index + 1) * self._batch_size
+            yield (np.array(x1[from_index : to_index]),
+                   np.array(x2[from_index : to_index]),
+                   labels[from_index: to_index])
 
     def train(self, history_observations, history_dones):
         """Do one pass of training of the R-network."""
@@ -383,29 +361,29 @@ class RNetworkTrainer(object):
             x1[train_count:], x2[train_count:], labels[train_count:])
 
         validation_data = ([np.array(x1_valid),
-                            np.array(x2_valid)],
-                            np.eye(2, dtype=np.uint8)[labels_valid])
+                            np.array(x2_valid)], labels_valid)
 
         loss_fn = nn.CrossEntropyLoss()
 
         nr_steps = train_count // self._batch_size
+        import pdb; pdb.set_trace()
         for epoch in range(self._num_epochs):
             epoch_loss = 0.0
-            for step in range(nr_steps):
-                batch_x1, batch_x2, batch_labels = self._generate_batch(x1_train, x2_train, labels_train)
+            for step, batch in enumerate(self._generate_batch(x1_train, x2_train, labels_train)):
 
+                batch_x1, batch_x2, batch_labels = batch
                 self._optimizer.zero_grad()
 
-                batch_x1 = torch.tensor(batch_x1, dtype=torch.FloatTensor, device=self._device)
-                batch_x2 = torch.tensor(batch_x2, dtype=torch.FloatTensor, device=self._device)
-                batch_labels = torch.tensor(batch_labels, dtype=torch.LongTensor, device=self._device)
+                batch_x1 = self._preprocess_obs_fn(batch_x1, device=self._device)
+                batch_x2 = self._preprocess_obs_fn(batch_x2, device=self._device)
+                batch_labels = torch.tensor(batch_labels, dtype=torch.long, device=self._device)
 
                 emb_x1 = self._r_model.forward(batch_x1)
                 emb_x2 = self._r_model.forward(batch_x2)
 
                 predicted_similarities = self._r_model.forward_similarity(emb_x1, emb_x2)
 
-                loss = loss(predicted_similarities, batch_labels)
+                loss = loss_fn(predicted_similarities, batch_labels)
 
                 epoch_loss += loss.item()
 

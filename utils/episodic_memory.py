@@ -19,15 +19,17 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import torch
 
 
 class EpisodicMemory(object):
     """Episodic memory."""
     def __init__(self,
-               observation_shape,
-               observation_compare_fn,
-               replacement='fifo',
-               capacity=200):
+                 observation_shape,
+                 observation_compare_fn,
+                 device,
+                 replacement='fifo',
+                 capacity=200):
         """Creates an episodic memory.
         Args:
         observation_shape: Shape of an observation as a list
@@ -46,6 +48,8 @@ class EpisodicMemory(object):
         """
         self._capacity = capacity
         self._replacement = replacement
+        self._device =device
+
         if self._replacement not in ['fifo', 'random']:
             raise ValueError('Invalid replacement scheme')
 
@@ -53,18 +57,18 @@ class EpisodicMemory(object):
         self._observation_compare_fn = observation_compare_fn
         self.reset(False)
 
-    def reset(self, show_stats=True):
+    def reset(self, show_stats=False):
         """Resets the memory."""
         if show_stats:
-          size = len(self)
-          age_histogram, _ = np.histogram(self._memory_age[:size],
+            size = len(self)
+            age_histogram, _ = np.histogram(self._memory_age[:size],
                                           10, [0, self._count])
-          age_histogram = age_histogram.astype(np.float32)
-          age_histogram = age_histogram / np.sum(age_histogram)
-          print('Number of samples added in the previous trajectory: {}'.format(
-              self._count))
-          print('Histogram of sample freshness (old to fresh): {}'.format(
-              age_histogram))
+            age_histogram = age_histogram.astype(np.float32)
+            age_histogram = age_histogram / np.sum(age_histogram)
+            print('Number of samples added in the previous trajectory: {}'.format(
+                self._count))
+            print('Histogram of sample freshness (old to fresh): {}'.format(
+                age_histogram))
 
         self._count = 0
         # Stores environment observations.
@@ -95,20 +99,20 @@ class EpisodicMemory(object):
           ValueError: when the capacity of the memory is exceeded.
         """
         if self._count >= self._capacity:
-          if self._replacement == 'random':
-            # By using random replacement, the age of elements inside the memory
-            # follows a geometric distribution (more fresh samples compared to
-            # old samples).
-            index = np.random.randint(low=0, high=self._capacity)
-          elif self._replacement == 'fifo':
-            # In this scheme, only the last self._capacity elements are kept.
-            # Samples are replaced using a FIFO scheme (implemented as a circular
-            # buffer).
-            index = self._count % self._capacity
-          else:
-            raise ValueError('Invalid replacement scheme')
+            if self._replacement == 'random':
+                # By using random replacement, the age of elements inside the memory
+                # follows a geometric distribution (more fresh samples compared to
+                # old samples).
+                index = np.random.randint(low=0, high=self._capacity)
+            elif self._replacement == 'fifo':
+                # In this scheme, only the last self._capacity elements are kept.
+                # Samples are replaced using a FIFO scheme (implemented as a circular
+                # buffer).
+                index = self._count % self._capacity
+            else:
+                raise ValueError('Invalid replacement scheme')
         else:
-          index = self._count
+            index = self._count
 
         self._obs_memory[index] = observation
         self._info_memory[index] = info
@@ -128,11 +132,12 @@ class EpisodicMemory(object):
         # TODO(damienv): could we avoid replicating the observation ?
         # (with some form of broadcasting).
         size = len(self)
-        observation = np.array([observation] * size)
-        similarities = self._observation_compare_fn(observation,
-                                                    self._obs_memory[:size])
-        return similarities
+        observation = observation.unsqueeze(0).repeat(size, 1)
+        similarities = self._observation_compare_fn(
+            observation,
+            torch.tensor(self._obs_memory[:size], dtype=torch.float , device=self._device))
 
+        return torch.sigmoid(similarities)
 
 
 def similarity_to_memory(observation,
@@ -154,7 +159,9 @@ def similarity_to_memory(observation,
     memory_length = len(episodic_memory)
     if memory_length == 0:
         return 0.0
-    similarities = episodic_memory.similarity(observation)
+
+    # similarities is a 2d tensor, where the second value correspond to how reachable the obs are
+    similarities = (episodic_memory.similarity(observation))[:, 1].cpu()
     # Implements different surrogate aggregated similarities.
     # TODO(damienv): Implement other types of surrogate aggregated similarities.
     if similarity_aggregation == 'max':

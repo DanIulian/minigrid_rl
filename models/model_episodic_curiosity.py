@@ -26,7 +26,7 @@ class EpisodicCuriosityModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.policy_model = WorldsPolicyModel(cfg, obs_space, action_space, use_memory=use_memory)
 
-        self.rn_model = RNetwork(cfg, obs_space)
+        self.curiosity_model = RNetwork(cfg, obs_space)
 
         self.memory_type = self.policy_model.memory_type
         self.use_memory = self.policy_model.use_memory
@@ -44,7 +44,7 @@ class WorldsPolicyModel(Model):
     For details see replica_model.Model
     '''
     def __init__(self, cfg, obs_space, action_space, use_memory=False):
-        super(WorldsPolicyModel, self).__init__()
+        super(WorldsPolicyModel, self).__init__(cfg, obs_space, action_space, use_memory)
 
         # Define value heads
         self.vf_int = nn.Linear(self.mem_size, 1)
@@ -100,17 +100,25 @@ class RNetwork(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
+        # set the similarity function to be used
+        self._similarity = getattr(cfg, "similarity_computation", "simple")
+        if self._similarity == "simple":
+            self.forward_similarity = self._forward_similarity_simple
+        else:
+            self.forward_similarity = self._forward_similarity_complex
+
+
         self._embedding_size = getattr(cfg, "r_net_embedding_size", 512) # embedding size after CNN processing
         k_sizes = getattr(cfg, "r_net_k_sizes", [2, 2, 2])  # kernel size for each layer
         s_sizes = getattr(cfg, "r_net_s_sizes", [1, 1, 1])  # stride size for each layer
         comp_sizes = getattr(cfg, "r_net_comp_sizes", [512, 512, 256]) # number of units for comparator
+
 
         # experiment used model
         self.image_embedding = nn.Sequential(
             nn.Conv2d(3, 32, k_sizes[0], s_sizes[0]),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
 
             nn.Conv2d(32, 64, k_sizes[1], s_sizes[1]),
             nn.BatchNorm2d(64),
@@ -121,7 +129,8 @@ class RNetwork(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        out_conv_size = self.image_embedding(torch.rand((1, obs_space["image"][2], n, m))).size()
+        with torch.no_grad():
+            out_conv_size = self.image_embedding(torch.rand((1, obs_space["image"][2], n, m))).size()
         self.image_embedding_size = int(np.prod(out_conv_size))
 
         self.fc1 = nn.Sequential(
@@ -145,14 +154,13 @@ class RNetwork(nn.Module):
 
         self.apply(initialize_parameters_ec)
 
-
     @property
     def embedding_size(self):
         return self._embedding_size
 
     def forward(self, obs):
         # get the observation embedding
-        x = torch.transpose(torch.transpose(obs, 1, 3), 2, 3).contiguous()
+        x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3).contiguous()
         x = self.image_embedding(x)
         x = x.reshape(x.shape[0], -1)
         x = self.fc1(x)
@@ -160,11 +168,13 @@ class RNetwork(nn.Module):
         return x
 
     def forward_similarity(self, emb1, emb2):
+        return None
+
+    def _forward_similarity_complex(self, emb1, emb2):
         x = torch.cat([emb1, emb2], dim=1)
         return self.comparator(x)
 
-
-    def forward_similarity_simple(self, emb1, emb2):
+    def _forward_similarity_simple(self, emb1, emb2):
         """A simple top network that basically computes sigmoid(dot_product(x1, x2)).
         """
         dot_product = torch.sum(emb1 * emb2, axis=1)

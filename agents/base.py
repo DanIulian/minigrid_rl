@@ -9,14 +9,14 @@ from copy import deepcopy
 import collections
 
 from torch_rl.format import default_preprocess_obss
-from torch_rl.utils import DictList, ParallelEnv
+from torch_rl.utils import DictList
 from utils.gym_wrappers import get_interactions_stats
 
 
 class BaseAlgo(ABC):
     """The base class for RL algorithms."""
 
-    def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
+    def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
                  min_stats_ep_batch=16, log_metrics_names=None):
         """
@@ -62,7 +62,6 @@ class BaseAlgo(ABC):
         self.acmodel = acmodel
         self.num_frames_per_proc = num_frames_per_proc
         self.discount = discount
-        self.lr = lr
         self.gae_lambda = gae_lambda
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef

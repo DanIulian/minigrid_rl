@@ -11,6 +11,34 @@ from __future__ import print_function
 import utils.episodic_memory as ep_mem
 from torch_rl.utils import ParallelEnv
 import numpy as np
+import torch
+from copy import deepcopy
+
+
+def get_observation_embedding_fn(r_model):
+
+    def _observation_embedding_fn(x):
+        r_model.eval()
+        with torch.no_grad():
+            embeddings =  r_model.forward(x)
+        r_model.train()
+
+        return embeddings
+
+    return _observation_embedding_fn
+
+
+def get_observation_compare_fn(r_model):
+
+    def _observation_compare_fn(x1, x2):
+        r_model.eval()
+        with torch.no_grad():
+            rez = r_model.forward_similarity(x1, x2)
+        r_model.train()
+
+        return rez
+
+    return _observation_compare_fn
 
 
 class CuriosityEnvWrapper(ParallelEnv):
@@ -18,16 +46,17 @@ class CuriosityEnvWrapper(ParallelEnv):
     def __init__(self,
                  envs,
                  cfg,
-                 observation_shape,
+                 device,
                  observation_preprocess_fn,
-                 observation_embedding_fn,
-                 observation_compare_fn):
+                 r_model):
 
         super(CuriosityEnvWrapper, self).__init__(envs)
 
+        self._r_model = r_model
+        self._device = device
         self._observation_preprocess_fn = observation_preprocess_fn
-        self._observation_embedding_fn = observation_embedding_fn
-        self._observation_compare_fn = observation_compare_fn
+        self._observation_embedding_fn = get_observation_embedding_fn(r_model)
+        self._observation_compare_fn = get_observation_compare_fn(r_model)
 
         self._scale_task_reward = getattr(cfg, "scale_task_reward", 1.0)
         self._scale_surrogate_reward = getattr(cfg, "scale_surrogate_reward", 0.0)
@@ -39,11 +68,13 @@ class CuriosityEnvWrapper(ParallelEnv):
         # Create an episodic memory for each env
         replacement_strategy = getattr(cfg, "replacement_strategy", "fifo")
         memory_capacity = getattr(cfg, "memory_capacity", 200)
+        embedding_size = getattr(cfg, "embedding_size", [512])
 
-        self._episodic_memories = [ep_mem.EpisodicMemory(observation_shape,
-                                                  self._observation_compare_fn,
-                                                  replacement_strategy,
-                                                  memory_capacity) for _ in range(self.no_envs + 1)]
+        self._episodic_memories = [ep_mem.EpisodicMemory(embedding_size,
+                                                         self._observation_compare_fn,
+                                                         self._device,
+                                                         replacement_strategy,
+                                                         memory_capacity) for _ in range(self.no_envs + 1)]
 
         # Total number of steps so far per environment.
         self._step_count = 0
@@ -53,12 +84,12 @@ class CuriosityEnvWrapper(ParallelEnv):
         # Observers implement a function "on_new_observation".
         self._observers = []
 
-    def _compute_curiosity_reward(self, observations, dones, infos):
+    def _compute_curiosity_reward(self, observations, infos, dones):
         """Compute intrinsic curiosity reward.
         The reward is set to 0 when the episode is finished
         """
 
-        frames = self._observation_preprocess_fn(observations)
+        frames = self._observation_preprocess_fn(observations, device=self._device)
         embedded_observations = self._observation_embedding_fn(frames)
 
         similarity_to_memory = [
@@ -73,13 +104,13 @@ class CuriosityEnvWrapper(ParallelEnv):
             # and always adds the first state of the new episode to the memory.
             if dones[k]:
                 self._episodic_memories[k].reset()
-                self._episodic_memories[k].add(embedded_observations[k], infos[k])
+                self._episodic_memories[k].add(embedded_observations[k].cpu(), infos[k])
                 continue
 
             # Only add the new state to the episodic memory if it is dissimilar
             # enough.
             if similarity_to_memory[k] < self._similarity_threshold:
-                self._episodic_memories[k].add(embedded_observations[k], infos[k])
+                self._episodic_memories[k].add(embedded_observations[k].cpu(), infos[k])
 
         # Augment the reward with the exploration reward.
         bonus_rewards = [
@@ -113,6 +144,9 @@ class CuriosityEnvWrapper(ParallelEnv):
             bonus_rewards = self._compute_curiosity_reward(obs, infos, dones)
             reward_for_input = bonus_rewards
 
+            for i in range(self.no_envs + 1):
+                infos[i]["ir"] = bonus_rewards[i]
+
         elif self._exploration_reward == 'none':
             bonus_rewards = np.zeros(self.no_envs + 1)
             reward_for_input = np.zeros(self.no_envs + 1)
@@ -121,27 +155,34 @@ class CuriosityEnvWrapper(ParallelEnv):
             raise ValueError('Unknown exploration reward: {}'.format(self._exploration_reward))
 
         # Combined rewards.
-        #scale_surrogate_reward = self._scale_surrogate_reward
-        #if self._step_count < self._exploration_reward_min_step:
+        scale_surrogate_reward = self._scale_surrogate_reward
+        if self._step_count < self._exploration_reward_min_step:
             # This can be used for online training during the first N steps,
             # the R network is totally random and the surrogate reward has no
             # meaning.
-        #    scale_surrogate_reward = 0.0
+            scale_surrogate_reward = 0.0
 
-        #postprocessed_rewards = (self._scale_task_reward * rewards +
-        #                           scale_surrogate_reward * bonus_rewards)
+        postprocessed_rewards = (self._scale_task_reward * np.array(rewards) +
+                                 scale_surrogate_reward * bonus_rewards)
 
-        return obs, (rewards, bonus_rewards), dones, infos
+        return obs, postprocessed_rewards, dones, infos
 
     def add_observer(self, observer):
         self._observers.append(observer)
 
     def get_episodic_memeories(self):
-      return self._episodic_memories
+        return self._episodic_memories
 
     def get_episodic_memory(self, k):
-      """Returns the episodic memory for the k-th environment."""
-      return self._episodic_memories[k]
+        """Returns the episodic memory for the k-th environment."""
+        return self._episodic_memories[k]
 
     def render(self):
         raise NotImplementedError
+
+    def __len__(self):
+        return self.no_envs + 1
+
+    def __getitem__(self, item):
+        return self.envs[item]
+
