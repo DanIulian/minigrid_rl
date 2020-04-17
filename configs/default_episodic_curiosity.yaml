@@ -1,9 +1,9 @@
 main:
-  env: MiniGrid-DoorKey-5x5-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-DoorKey-8x8-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 3 # type=int, default=16, help="number of processes (default: 16)")
-  frames: 5.e+5 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
+  frames: 3.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   eval_interval: 10
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   save_interval: 0 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
@@ -47,10 +47,10 @@ agent:
 
   # Parameters for computing the intrinsic reward and combining rewards
   scale_task_reward: 1.0                    # extrinsic reward coefficient
-  scale_surrogate_reward: 0.3               # intrinsic reward coefficient
+  scale_surrogate_reward: 0.005               # intrinsic reward coefficient
   bonus_reward_additive_term: 0             # constant value (an epsilon) to add to intrinsic reward
-  exploration_reward_min_step: 100000       # threshold for starting to compute intrinsic rewards
-  similarity_threshold: 0.5                 # threshold for adding a new embedding to the episodic memory
+  exploration_reward_min_step: 10000        # threshold for starting to compute intrinsic rewards
+  similarity_threshold: 0.9                # threshold for adding a new embedding to the episodic memory
   replacement_stragegy: "fifo"              # episodic memory replacement strategy
   memory_capacity: 200                      # size of episodic memory
   exploration_reward: "episodic_curiosity"  # select if intrinsic reward is computed
@@ -58,10 +58,10 @@ agent:
 
   # Parameters for training the similarity network
   r_net_batch_size: 64                      # batch size when training the curiosity module RNetwork
-  r_net_num_epochs: 6                       # number of epochs to train the curiosity module RNetwork
-  r_net_observation_history_size: 500     # number of observations used for training once
-  r_net_training_interval: 500            # number of steps between two consecutive training periods
-  r_net_training_data_type: "v4"            # tells the process of creating the dataset from observations
+  r_net_num_epochs: 10                       # number of epochs to train the curiosity module RNetwork
+  r_net_observation_history_size: 6000     # number of observations used for training once
+  r_net_training_interval: 3000            # number of steps between two consecutive training periods
+  r_net_training_data_type: "v123"            # tells the process of creating the dataset from observations
   r_net_max_action_distance: 5              # given two obs: o_i, o_j, they are reachable for each other if |o_i - o_j| <= value
   r_net_avg_num_examples_per_env_step: 1    # number of datapoints created from each env step
   r_net_negative_sample_multiplier: 5       # used to create a gap between positive and negative example
@@ -70,7 +70,7 @@ agent:
       lr: 1.e-4
       betas: [0.9, 0.999]
       eps: 1.e-8
-  r_net_initial_training_budget: 100000     # number of steps taken in the environment for training only RNetwork
+  r_net_initial_training_budget: 9000     # number of steps taken in the environment for training only RNetwork
 
 model:
   name: EpisodicCuriosityModel
@@ -88,3 +88,5 @@ model:
   r_net_embedding_size: 512           # embedding extractor features size
   similarity_computation: "complex"   # type of comparator used for similarity
   # simple - uses only dot product and a sigmoid, while complex - uses a feed forward network
+
+extra_logs: [[return_int_per_episode, rIntR, 2f]]

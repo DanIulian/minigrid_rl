@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import os
 
-from agents.base_algo_v2 import BaseAlgov2
+from agents.base_intrinsic import BaseCustomIntrinsic
 from torch_rl.utils import DictList
 from utils.format import preprocess_images
 from utils.ec_curiosity_wrapper import CuriosityEnvWrapper
@@ -12,7 +12,7 @@ from utils.train_episodic_curiosity_network import RNetworkTrainer
 from torch_rl.format import default_preprocess_obss
 
 
-class PPOEpisodicCuriosity(BaseAlgov2):
+class PPOEpisodicCuriosity(BaseCustomIntrinsic):
 
     def __init__(self, cfg, envs, acmodel, agent_data, **kwargs):
 
@@ -30,6 +30,9 @@ class PPOEpisodicCuriosity(BaseAlgov2):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
+        scale_ext_reward = getattr(cfg, "scale_task_reward", 1.0)
+        scale_int_reward = getattr(cfg, "scale_surrogate_reward", 0.03)
+
         # Create envs
         envs = CuriosityEnvWrapper(envs, cfg,
                                    torch.device("cuda" if torch.cuda.is_available() else "cpu"),
@@ -41,7 +44,7 @@ class PPOEpisodicCuriosity(BaseAlgov2):
             discount, gae_lambda, entropy_coef,
             value_loss_coef, max_grad_norm,
             recurrence, preprocess_obss,
-            reshape_reward)
+            reshape_reward, scale_ext_reward, scale_int_reward)
 
 
         # create the training class for RNetwork and add the callback to the CuriosityEnvWrapper
@@ -55,11 +58,6 @@ class PPOEpisodicCuriosity(BaseAlgov2):
         self.batch_size = batch_size
         self.batch_num = 0
         self.updates_cnt = 0
-
-        # Curiosity module parameters
-        self._scale_task_reward = getattr(cfg, "scale_task_reward", 1.0)
-        self._scale_surrogate_reward = getattr(cfg, "scale_surrogate_reward", 0.0)
-        self._bonus_reward_additive_term = getattr(cfg, "bonus_reward_additive_term", 0)
 
         # do initial training of RNetwork
         r_net_initial_budget = getattr(cfg, "r_net_initial_training_budget", 0)
@@ -121,14 +119,14 @@ class PPOEpisodicCuriosity(BaseAlgov2):
             experience["norm_value"] = norm_value
             torch.save(experience, f"{self.experience_dir}/exp_update_{update}")
 
-        for epoch_no in range(self.epochs):
-            # Initialize log values
-            log_entropies = []
-            log_values = []
-            log_policy_losses = []
-            log_value_losses = []
-            log_grad_norms = []
+        # Initialize log values
+        log_entropies = []
+        log_values = []
+        log_policy_losses = []
+        log_value_losses = []
+        log_grad_norms = []
 
+        for epoch_no in range(self.epochs):
             for inds in self._get_batches_starting_indexes():
                 # Initialize batch values
 
@@ -151,9 +149,9 @@ class PPOEpisodicCuriosity(BaseAlgov2):
                     # Compute loss
 
                     if self.acmodel.recurrent:
-                        dist, value, memory = self.acmodel(sb.obs, memory * sb.mask)
+                        dist, value, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
                     else:
-                        dist, value = self.acmodel(sb.obs)
+                        dist, value = self.acmodel.policy_model(sb.obs)
 
                     entropy = dist.entropy().mean()
 
@@ -194,11 +192,11 @@ class PPOEpisodicCuriosity(BaseAlgov2):
                 batch_loss /= self.recurrence
 
                 # Update actor-critic
-                self.optimizer.zero_grad()
+                self.optimizer_policy.zero_grad()
                 batch_loss.backward()
-                grad_norm = sum(p.grad.data.norm(2).item() ** 2 for p in self.acmodel.parameters()) ** 0.5
-                torch.nn.utils.clip_grad_norm_(self.acmodel.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                grad_norm = sum(p.grad.data.norm(2).item() ** 2 for p in self.acmodel.policy_model.parameters()) ** 0.5
+                torch.nn.utils.clip_grad_norm_(self.acmodel.policy_model.parameters(), self.max_grad_norm)
+                self.optimizer_policy.step()
 
                 # Update log values
                 log_entropies.append(batch_entropy)
@@ -247,7 +245,7 @@ class PPOEpisodicCuriosity(BaseAlgov2):
         else:
             # Consider Num frames list ordered P * T
             # Do not index step[:padding] and step[-padding:]
-            frame_index = np.arange(padding, num_frames_per_proc-padding+1-recurrence, recurrence)
+            frame_index = np.arange(padding, num_frames_per_proc-padding + 1 - recurrence, recurrence)
             indexes = np.resize(frame_index.reshape((1, -1)), (num_procs, len(frame_index)))
             indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
             indexes = indexes.reshape(-1)
@@ -270,7 +268,6 @@ class PPOEpisodicCuriosity(BaseAlgov2):
 
         curr_obs = self.obs
         for i in range(num_steps):
-            print(i)
             # Do one agent-environment interaction
 
             action = torch.randint(0, self.env.action_space.n, (self.num_procs,))  # sample uniform actions

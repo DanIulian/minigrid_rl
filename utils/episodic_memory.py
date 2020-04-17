@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 class EpisodicMemory(object):
@@ -137,7 +138,9 @@ class EpisodicMemory(object):
             observation,
             torch.tensor(self._obs_memory[:size], dtype=torch.float , device=self._device))
 
-        return torch.sigmoid(similarities)
+        with torch.no_grad():
+            rez = F.softmax(similarities, dim=1)
+        return rez
 
 
 def similarity_to_memory(observation,

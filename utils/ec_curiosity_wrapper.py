@@ -84,6 +84,14 @@ class CuriosityEnvWrapper(ParallelEnv):
         # Observers implement a function "on_new_observation".
         self._observers = []
 
+        # select step method based on exploration_bonus
+        if self._exploration_reward == 'episodic_curiosity':
+            self.step = self._step_bonus
+        elif self._exploration_reward == 'none':
+            self.step = self._step_simple
+        else:
+            raise ValueError('Unknown exploration reward: {}'.format(self._exploration_reward))
+
     def _compute_curiosity_reward(self, observations, infos, dones):
         """Compute intrinsic curiosity reward.
         The reward is set to 0 when the episode is finished
@@ -129,7 +137,10 @@ class CuriosityEnvWrapper(ParallelEnv):
 
         return observations
 
-    def step(self, actions):
+    def _step_simple(self, actions):
+        return super(CuriosityEnvWrapper, self).step(actions)
+
+    def _step_bonus(self, actions):
 
         obs, rewards, dones, infos = super(CuriosityEnvWrapper, self).step(actions)
 
@@ -137,35 +148,11 @@ class CuriosityEnvWrapper(ParallelEnv):
             observer.on_new_observation(obs, rewards, dones, infos)
 
         self._step_count += 1
-
         # Exploration bonus.
-        reward_for_input = None
-        if self._exploration_reward == 'episodic_curiosity':
-            bonus_rewards = self._compute_curiosity_reward(obs, infos, dones)
-            reward_for_input = bonus_rewards
+        bonus_rewards = self._compute_curiosity_reward(obs, infos, dones)
 
-            for i in range(self.no_envs + 1):
-                infos[i]["ir"] = bonus_rewards[i]
+        return obs, (np.array(rewards), bonus_rewards), dones, infos
 
-        elif self._exploration_reward == 'none':
-            bonus_rewards = np.zeros(self.no_envs + 1)
-            reward_for_input = np.zeros(self.no_envs + 1)
-
-        else:
-            raise ValueError('Unknown exploration reward: {}'.format(self._exploration_reward))
-
-        # Combined rewards.
-        scale_surrogate_reward = self._scale_surrogate_reward
-        if self._step_count < self._exploration_reward_min_step:
-            # This can be used for online training during the first N steps,
-            # the R network is totally random and the surrogate reward has no
-            # meaning.
-            scale_surrogate_reward = 0.0
-
-        postprocessed_rewards = (self._scale_task_reward * np.array(rewards) +
-                                 scale_surrogate_reward * bonus_rewards)
-
-        return obs, postprocessed_rewards, dones, infos
 
     def add_observer(self, observer):
         self._observers.append(observer)

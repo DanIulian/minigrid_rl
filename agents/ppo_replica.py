@@ -45,13 +45,14 @@ class PPO(BaseAlgov2):
 
         envs = ParallelEnv(envs)
         super().__init__(
-            envs, acmodel, num_frames_per_proc, discount, optimizer_args.lr, gae_lambda,
+            envs, acmodel, num_frames_per_proc, discount, gae_lambda,
             entropy_coef, value_loss_coef, max_grad_norm, recurrence, preprocess_obss,
             reshape_reward, log_metrics_names=log_metrics_names)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
         self.batch_size = batch_size
+        self.lr = optimizer_args.lr
 
         assert self.batch_size % self.recurrence == 0
 
@@ -93,14 +94,13 @@ class PPO(BaseAlgov2):
             experience["norm_value"] = norm_value
             torch.save(experience, f"{self.experience_dir}/exp_update_{update}")
 
+        # Initialize log values
+        log_entropies = []
+        log_values = []
+        log_policy_losses = []
+        log_value_losses = []
+        log_grad_norms = []
         for epoch_no in range(self.epochs):
-            # Initialize log values
-            log_entropies = []
-            log_values = []
-            log_policy_losses = []
-            log_value_losses = []
-            log_grad_norms = []
-
             for inds in self._get_batches_starting_indexes():
                 # Initialize batch values
 
@@ -264,7 +264,6 @@ class PPO(BaseAlgov2):
         num_envs_results = 0
         log_reshaped_return = []
 
-        import pdb; pdb.set_trace()
         while num_envs_results < eval_episodes:
 
             preprocessed_obs = preprocess_obss(obs, device=device)

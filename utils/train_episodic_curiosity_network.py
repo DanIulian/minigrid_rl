@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from tqdm import tqdm
 
 def generate_positive_example(buffer_position,
                               next_buffer_position):
@@ -99,7 +99,7 @@ def create_training_data_from_episode_buffer_v4(episode_buffer,
     # we don't select twice exactly the same pair (i, i + j)).
     positive_pair_candidates = []
     for first in range(len(episode_buffer)):
-        for j in range(1, max_action_distance + 1):
+        for j in range(0, max_action_distance + 1):
             second = first + j
             if second >= len(episode_buffer):
                 continue
@@ -127,6 +127,8 @@ def create_training_data_from_episode_buffer_v4(episode_buffer,
         # Checking this is not strictly required, because it should happen
         # infrequently with current parameter values.
         # We still check for it for the symmetry with the positive example case.
+        if i is None or j is None:
+            continue
         if (i, j) not in negative_pairs and (j, i) not in negative_pairs:
             negative_pairs.add((i, j))
 
@@ -252,6 +254,7 @@ class RNetworkTrainer(object):
             print('Training the R-network after: {}'.format(self._fifo_count))
             history_observations, history_dones = self._get_flatten_history()
             self.train(history_observations, history_dones)
+            self._current_epoch += 1
 
     def _get_flatten_history(self):
         """Convert the history given as a circular fifo to a linear array."""
@@ -360,14 +363,14 @@ class RNetworkTrainer(object):
         x1_valid, x2_valid, labels_valid = (
             x1[train_count:], x2[train_count:], labels[train_count:])
 
-        validation_data = ([np.array(x1_valid),
-                            np.array(x2_valid)], labels_valid)
+        validation_data = (np.array(x1_valid),
+                           np.array(x2_valid), labels_valid)
 
         loss_fn = nn.CrossEntropyLoss()
 
         nr_steps = train_count // self._batch_size
-        import pdb; pdb.set_trace()
-        for epoch in range(self._num_epochs):
+        mean_epoch_loss = 0.0
+        for _ in tqdm(range(self._num_epochs)):
             epoch_loss = 0.0
             for step, batch in enumerate(self._generate_batch(x1_train, x2_train, labels_train)):
 
@@ -391,4 +394,29 @@ class RNetworkTrainer(object):
                 self._optimizer.step()
 
             epoch_loss /= nr_steps
-            print("Training N Network: Epoch-{}  Loss-{}".format(epoch, epoch_loss))
+            mean_epoch_loss += epoch_loss
+
+        mean_epoch_loss /= self._num_epochs
+        print("Training N Network: Era {} Loss: {}".format(self._current_epoch, mean_epoch_loss))
+        self._compute_accuracy(validation_data)
+
+    def _compute_accuracy(self, validation_data):
+
+        valid_x1, valid_x2, valid_labels = validation_data
+        valid_x1 = self._preprocess_obs_fn(valid_x1, device=self._device)
+        valid_x2 = self._preprocess_obs_fn(valid_x2, device=self._device)
+        valid_labels = torch.tensor(valid_labels, dtype=torch.long, device=self._device)
+        self._r_model.eval()
+        with torch.no_grad():
+            emb1 = self._r_model.forward(valid_x1)
+            emb2 = self._r_model.forward(valid_x2)
+
+            predicted_similarities = self._r_model.forward_similarity(emb1, emb2)
+            # get predicted label values
+            predicted_labels = torch.argmax(predicted_similarities, axis=1)
+
+            nr_equal_labels = (predicted_labels == valid_labels).sum().item()
+            accuracy = float(nr_equal_labels) / float(valid_labels.shape[0])
+        self._r_model.train()
+
+        print("RNetwork accuracy on validation data after {} training epochs is {}".format(self._current_epoch, accuracy))

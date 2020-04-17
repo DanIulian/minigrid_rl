@@ -63,8 +63,13 @@ def print_keys(header: list, data: list, extra_logs: list = None) -> tuple:
 
     for field in extra_logs:
         if field[0] in header:
-            basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
-            printable_data.append(data[header.index(field[0])])
+            if type(data[header.index(field[0])]) == list:
+                basic_keys_format += (" | " + field[1] + ":μσmM {:.2f} {:.2f} {:.2f} {:.2f}")
+                data_values = utils.synthesize(data[header.index(field[0])])
+                printable_data.extend(data_values.values())
+            else:
+                basic_keys_format += (" | " + field[1] + " {:." + field[2] + "} ")
+                printable_data.append(data[header.index(field[0])])
 
     return basic_keys_format, printable_data
 
@@ -107,10 +112,10 @@ def obs_preprocess(env_cfg: Namespace, main_cfg: Namespace, observation_space, m
 
 
 def get_training_logs(logs: dict,
-                        loop_duration: tuple,
-                        init_time: float,
-                        num_frames: int,
-                        update: int) -> Tuple[list, list]:
+                      loop_duration: tuple,
+                      init_time: float,
+                      num_frames: int,
+                      update: int) -> Tuple[list, list]:
 
     update_start_time, prev_start_time = loop_duration
 

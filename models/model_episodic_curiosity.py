@@ -47,11 +47,11 @@ class WorldsPolicyModel(Model):
         super(WorldsPolicyModel, self).__init__(cfg, obs_space, action_space, use_memory)
 
         # Define value heads
-        self.vf_int = nn.Linear(self.mem_size, 1)
-        self.vf_ext = self.vf
+        #self.vf_int = nn.Linear(self.mem_size, 1)
+        #self.vf_ext = self.vf
 
         # Initialize parameters correctly
-        initialize_parameters2(self.vf_int)
+        #initialize_parameters2(self.vf_int)
 
     def forward(self, obs, memory):
 
@@ -78,14 +78,14 @@ class WorldsPolicyModel(Model):
         act = self.fc2_act(embedding)
 
         # Value function head
-        vpred_int = self.vf_int(val).squeeze(1)
-        vpred_ext = self.vf_ext(val).squeeze(1)
+        #vpred_int = self.vf_int(val).squeeze(1)
+        vpred_ext = self.vf(val).squeeze(1)
 
         # Action head
         pd = self.pd(act)
         dist = Categorical(logits=F.log_softmax(pd, dim=1))
 
-        return dist, (vpred_ext, vpred_int), memory
+        return dist, vpred_ext, memory
 
 
 class RNetwork(nn.Module):
