@@ -1,9 +1,7 @@
 ''' Dan Iulian Muntean 2020
     Generic agent for policy evaluation
 '''
-import numpy as np
-import gym
-import gym_minigrid
+
 from gym_minigrid.wrappers import *
 from gym_minigrid.window import Window
 import torch
@@ -11,7 +9,10 @@ import torch.nn
 
 import utils.episodic_memory as ep_mem
 import numpy as np
-
+import os
+import matplotlib.pyplot as plt
+import cv2
+import tqdm
 
 
 class BonusRewardWrapper(object):
@@ -21,8 +22,6 @@ class BonusRewardWrapper(object):
                  r_model,
                  device,
                  observation_preprocess_fn):
-
-        super(BonusRewardWrapper, self).__init__(envs)
 
         self._r_model = r_model
         self._device = device
@@ -96,7 +95,7 @@ class RGBImgWrapper(gym.core.ObservationWrapper):
 
         self.tile_size = tile_size
 
-        self.observation_space.spaces['image'] = spaces.Box(
+        self.observation_space.spaces['rendered_image'] = spaces.Box(
             low=0,
             high=255,
             shape=(self.env.width*tile_size, self.env.height*tile_size, 3),
@@ -114,7 +113,7 @@ class RGBImgWrapper(gym.core.ObservationWrapper):
 
         return {
             'mission': obs['mission'],
-            'image': obs,
+            'image': obs['image'],
             'rendered_image': rgb_img
         }
 
@@ -131,7 +130,7 @@ class RGBImgPartialWrapper(gym.core.ObservationWrapper):
         self.tile_size = tile_size
 
         obs_shape = env.observation_space['image'].shape
-        self.observation_space.spaces['image'] = spaces.Box(
+        self.observation_space.spaces['rendered_image'] = spaces.Box(
             low=0,
             high=255,
             shape=(obs_shape[0] * tile_size, obs_shape[1] * tile_size, 3),
@@ -148,20 +147,30 @@ class RGBImgPartialWrapper(gym.core.ObservationWrapper):
 
         return {
             'mission': obs['mission'],
-            'image': obs,
+            'image': obs['image'],
             'rendered_image': rgb_img_partial
         }
 
 
 class EvalAgent(object):
 
-    def __init__(self, envs, model, r_model, obs_preprocess_fn, argmax=False, view_type="FullView",  save_dir=None):
+    def __init__(self, envs,
+                 model,
+                 r_model,
+                 obs_preprocess_fn,
+                 save_dir,
+                 nr_steps,
+                 nr_runs,
+                 argmax=False,
+                 view_type="FullView"):
 
         self._model = model
         self._view_type = view_type
         self._save_dir = save_dir
         self._obs_preprocess_fn = obs_preprocess_fn
         self._argmax = argmax
+        self._nr_runs = nr_runs
+        self._nr_steps = nr_steps
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -171,7 +180,7 @@ class EvalAgent(object):
         self._eval_env = gym.make(env_name)
         self._eval_env.action_space.n = head_env.action_space.n
         self._eval_env.max_steps = head_env.max_steps
-        self._eval_env.seed(np.randint(1, 10000))
+        self._eval_env.seed(np.random.randint(1, 10000))
 
         if self._view_type == "FullView":
             self._eval_env = RGBImgWrapper(self._eval_env)
@@ -180,155 +189,74 @@ class EvalAgent(object):
         else:
             raise ValueError("Incorrect view name: {}".format(self._view_type))
 
-        self._eval_env = BonusRewardWrapper(self._eval_env, r_model, self._device, self._obs_preprocess_fn)
+        #self._eval_env = BonusRewardWrapper(self._eval_env, r_model, self._device, self._obs_preprocess_fn)
 
         if self._model.recurrent:
-            self._memories = torch.zeros(1, self._model.memory_size)
+            self._memories = torch.zeros(1, self._model.memory_size, device=self._device)
 
-    def get_actions(self, obss):
-        preprocessed_obss = self.preprocess_obss(obss)
+        self._eval_path = f"{self._save_dir}/eval_episodes"
+        if not os.path.exists(self._eval_path):
+            os.mkdir(self._eval_path)
 
-        with torch.no_grad():
-            if self.acmodel.recurrent:
-                dist, _, self.memories = self.acmodel(preprocessed_obss, self.memories)
-            else:
-                dist, _ = self.acmodel(preprocessed_obss)
+        self._step_count = 0
 
-        if self.argmax:
-            actions = dist.probs.max(1, keepdim=True)[1]
-        else:
-            actions = dist.sample()
+    def _run_episode(self, nr_runs, nr_steps):
 
-        if torch.cuda.is_available():
-            actions = actions.cpu().numpy()
-
-        return actions
-
-    def run_episode(self):
-
+        print("Evaluating agent after {} for {} episodes".format(nr_steps, nr_runs))
         self._model.eval()
 
-        with torch.no_grad():
+        #import pdb; pdb.set_trace()
+        for i in tqdm.tqdm(range(nr_runs)):
             obs = self._eval_env.reset()
+            human_obs = obs["rendered_image"]
+            episode_obs = [human_obs]
 
             while True:
+                #preprocess observation
+                preprocessed_obs = self._obs_preprocess_fn([obs], device=self._device)
 
+                with torch.no_grad():
+                    if self._model.recurrent:
+                        dist, _, self._memories = self._model(preprocessed_obs, self._memories)
+                    else:
+                        dis, _ = self._model(preprocessed_obs)
 
+                if self._argmax:
+                    action = dist.probs.max(1, keepdim=True)
+                else:
+                    action = dist.sample()
+
+                obs, reward, done, info = self._eval_env.step(action.cpu().numpy())
+
+                human_obs = obs["rendered_image"]
+                episode_obs.append(human_obs)
+                if done:
+                    break
+
+            self._save_episode(episode_obs, i, nr_steps)
 
         self._model.train()
 
-        obs = self._eval_env.reset()
+    def _save_episode(self, episode_obs, run_no, nr_steps):
 
+        eval_dir = f"{self._eval_path}/{str(nr_steps)}"
+        if not os.path.exists(eval_dir):
+            os.mkdir(eval_dir)
 
+        curr_ep_dir = f"{eval_dir}/episode_{str(run_no)}"
+        if not os.path.exists(curr_ep_dir):
+            os.mkdir(curr_ep_dir)
 
+        for i, img in enumerate(episode_obs):
+            plt.imsave(f"{curr_ep_dir}/image_{i}.png", img, format='png')
 
-    def save_episode(self):
-        pass
+    def on_new_observation(self, unused_obs, unused_rewards, unused_dones, unused_infos):
 
+        self._step_count += 1
 
+        if self._nr_steps == -1:
+            return
 
+        if self._step_count % self._nr_steps == 0:
+            self._run_episode(self._nr_runs, self._step_count)
 
-def redraw(img):
-    if not args.agent_view:
-        img = env.render('rgb_array', tile_size=args.tile_size)
-
-    window.show_img(img)
-
-def reset():
-    if args.seed != -1:
-        env.seed(args.seed)
-
-    obs = env.reset()
-    import pdb; pdb.set_trace()
-    if hasattr(env, 'mission'):
-        print('Mission: %s' % env.mission)
-        window.set_caption(env.mission)
-
-    redraw(obs)
-
-def step(action):
-    obs, reward, done, info = env.step(action)
-    print('step=%s, reward=%.2f' % (env.step_count, reward))
-
-    if done:
-        print('done!')
-        reset()
-    else:
-        redraw(obs)
-
-def key_handler(event):
-    print('pressed', event.key)
-
-    if event.key == 'escape':
-        window.close()
-        return
-
-    if event.key == 'backspace':
-        reset()
-        return
-
-    if event.key == 'left':
-        step(env.actions.left)
-        return
-    if event.key == 'right':
-        step(env.actions.right)
-        return
-    if event.key == 'up':
-        step(env.actions.forward)
-        return
-
-    # Spacebar
-    if event.key == ' ':
-        step(env.actions.toggle)
-        return
-    if event.key == 'pageup':
-        step(env.actions.pickup)
-        return
-    if event.key == 'pagedown':
-        step(env.actions.drop)
-        return
-
-    if event.key == 'enter':
-        step(env.actions.done)
-        return
-
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--env",
-    help="gym environment to load",
-    default='MiniGrid-MultiRoom-N6-v0'
-)
-parser.add_argument(
-    "--seed",
-    type=int,
-    help="random seed to generate the environment with",
-    default=-1
-)
-parser.add_argument(
-    "--tile_size",
-    type=int,
-    help="size at which to render tiles",
-    default=32
-)
-parser.add_argument(
-    '--agent_view',
-    default=False,
-    help="draw the agent sees (partially observable view)",
-    action='store_true'
-)
-
-args = parser.parse_args()
-
-env = gym.make(args.env)
-
-if args.agent_view:
-    env = RGBImgPartialObsWrapper(env)
-    env = ImgObsWrapper(env)
-
-window = Window('gym_minigrid - ' + args.env)
-window.reg_key_handler(key_handler)
-
-reset()
-
-# Blocking event loop
-window.show(block=False)

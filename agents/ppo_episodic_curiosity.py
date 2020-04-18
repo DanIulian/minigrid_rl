@@ -10,7 +10,7 @@ from utils.format import preprocess_images
 from utils.ec_curiosity_wrapper import CuriosityEnvWrapper
 from utils.train_episodic_curiosity_network import RNetworkTrainer
 from torch_rl.format import default_preprocess_obss
-
+from agents.eval_agent import  EvalAgent
 
 class PPOEpisodicCuriosity(BaseCustomIntrinsic):
 
@@ -82,6 +82,18 @@ class PPOEpisodicCuriosity(BaseCustomIntrinsic):
 
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
+
+        # Eval envs
+        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
+        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
+        self.eval_agent = EvalAgent(envs,
+                                    acmodel.policy_model,
+                                    acmodel.curiosity_model,
+                                    self.preprocess_obss,
+                                    self.out_dir,
+                                    eval_agent_nr_steps,
+                                    eval_nr_runs)
+        self.env.add_observer(self.eval_agent)
 
     def _get_optimizers(self, cfg, agent_data):
         optimizer = getattr(cfg, "optimizer", "Adam")

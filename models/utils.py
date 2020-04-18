@@ -57,8 +57,8 @@ def initialize_parameters_ec(m):
     classname = m.__class__.__name__
 
     if classname.find("Conv2d") != -1:
-        nn.init.kaiming_normal(m.weight.data, mode='fan_in', nonlinearity='relu')
-        nn.init.constant(m.bias.data, 0)
+        nn.init.kaiming_normal_(m.weight.data, mode='fan_in', nonlinearity='relu')
+        nn.init.constant_(m.bias.data, 0)
     elif classname.find("Linear") != -1:
-        nn.init.kaiming_normal(m.weight.data, mode='fan_in', nonlinearity='relu')
-        nn.init.constant(m.bias.data, 0)
+        nn.init.kaiming_normal_(m.weight.data, mode='fan_in', nonlinearity='relu')
+        nn.init.constant_(m.bias.data, 0)
