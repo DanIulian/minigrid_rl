@@ -14,7 +14,7 @@ from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
 
 
-class PPOIcm(TwoValueHeadsBaseGeneral):
+class PPODisagreement(TwoValueHeadsBaseGeneral):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 

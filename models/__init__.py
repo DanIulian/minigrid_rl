@@ -4,6 +4,7 @@ from . import model_worlds
 from . import model_icm_like
 from . import model_prediction_error
 from . import model_episodic_curiosity
+from . import model_disagreement
 
 MODELS = {
     "RNDModel": model_rnd_like.RNDModels,
@@ -12,6 +13,7 @@ MODELS = {
     "ICMModel": model_icm_like.ICMModel,
     "PEModel": model_prediction_error.PEModel,
     "EpisodicCuriosityModel": model_episodic_curiosity.EpisodicCuriosityModel,
+    "DisagreementModel": model_disagreement.DisagreementModel,
 }
 
 

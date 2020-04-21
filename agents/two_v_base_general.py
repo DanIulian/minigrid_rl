@@ -12,15 +12,20 @@ from torch_rl.utils import DictList, ParallelEnv
 from utils.gym_wrappers import get_interactions_stats
 
 
+import torch.nn.functional as F
+from argparse import Namespace
+from copy import deepcopy
+
+
 class TwoValueHeadsBaseGeneral(BaseAlgo):
     """The base class for RL algorithms."""
 
-    def __init__(self, envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda, entropy_coef,
+    def __init__(self, envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
                  value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward,
                  exp_used_pred, min_stats_ep_batch=16, log_metrics_names=None, intrinsic_reward_fn = None):
 
         super(TwoValueHeadsBaseGeneral, self).__init__(
-            envs, acmodel, num_frames_per_proc, discount, lr, gae_lambda,
+            envs, acmodel, num_frames_per_proc, discount, gae_lambda,
             entropy_coef, value_loss_coef, max_grad_norm, recurrence, preprocess_obss,
             reshape_reward, min_stats_ep_batch, log_metrics_names)
 
@@ -86,7 +91,6 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         self.add_extra_experience(exps)
 
         # ==========================================================================================
-
         # -- Calculate intrinsic return
         if self.intrinsic_reward_fn:
             self.rewards_int = self.intrinsic_reward_fn(exps, self.rewards_int)
@@ -102,6 +106,9 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
 
         # Compute advantages
         self.compute_advantages(next_value)
+
+        # Add the remaining required experiences
+        self.get_experiences(exps)
 
         # Log some values
         keep = max(self.log_done_counter, self.num_procs)
@@ -170,8 +177,75 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         exps.returnn_int = exps.value_int + exps.advantage_int
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
+    def augment_exp(self, exps):
+
+        # from exp (P * T , ** ) -> (T (rollout length), P, **)
+        num_procs = self.num_procs
+        num_frames_per_proc = self.num_frames_per_proc
+        device = self.device
+        env = self.env
+        agworld_network = self.acmodel.curiosity_model
+
+        shape = torch.Size([num_procs, num_frames_per_proc])
+        frame_exp = Namespace()
+
+        # ------------------------------------------------------------------------------------------
+        # Redo in format T x P
+
+        for k, v in exps.items():
+            if k == "obs":
+                continue
+            setattr(frame_exp, k, v.view(shape + v.size()[1:]).transpose(0, 1).contiguous())
+
+        def inverse_img(t, ii):
+            return torch.transpose(torch.transpose(t, ii, ii+2), ii+1, ii+2).contiguous()
+
+        frame_exp.obs_image = inverse_img(frame_exp.obs_image, 2)
+        #frame_exp.states = inverse_img(frame_exp.states, 2)
+
+        def gen_memory(ss):
+            return torch.zeros(num_frames_per_proc, num_procs, ss, device=device)
+
+        frame_exp.agworld_mems = gen_memory(agworld_network.memory_size)
+        frame_exp.agworld_embs = gen_memory(agworld_network.embedding_size)
+
+        frame_exp.actions_onehot = gen_memory(env.action_space.n)
+        frame_exp.actions_onehot.scatter_(2, frame_exp.action.unsqueeze(2).long(), 1.)
+
+        # ------------------------------------------------------------------------------------------
+        # Save last frame exp
+
+        last_frame_exp = Namespace()
+        for k, v in frame_exp.__dict__.items():
+            if k == "obs":
+                continue
+            setattr(last_frame_exp, k, v[-1].clone())
+
+        prev_frame_exps = self.prev_frame_exps
+        if self.prev_frame_exps is None:
+            prev_frame_exps = deepcopy(last_frame_exp)
+            for k, v in prev_frame_exps.__dict__.items():
+                v.zero_()
+
+        self.prev_frame_exps = last_frame_exp
+
+        # ------------------------------------------------------------------------------------------
+        # Fill memories with past
+
+        frame_exp.agworld_mems[0] = prev_frame_exps.agworld_mems
+        frame_exp.agworld_embs[0] = prev_frame_exps.agworld_embs
+
+        return frame_exp, prev_frame_exps
+
+    @staticmethod
+    def flip_back_experience(exp):
+        # for all tensors below, T x P -> P x T -> P * T
+        for k, v in exp.__dict__.items():
+            setattr(exp, k, v.transpose(0, 1).reshape(-1, *v.shape[2:]).contiguous())
+        return exp
+
     def collect_interactions(self, info):
-        super(TwoValueHeadsBaseGeneral, self).collect_experiences(info)
+        super(TwoValueHeadsBaseGeneral, self).collect_interactions(info)
 
     def process_interactions(self):
 
