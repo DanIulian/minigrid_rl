@@ -26,9 +26,9 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
 
         # extract necessary info from config file
         self.memory_type = cfg.memory_type
-        self.mem_size = getattr(cfg, "memory_size", 128)
+        self.mem_size = getattr(cfg, "memory_size", 256)
 
-        hidden_size = getattr(cfg, "hidden_size", 128)  # feature size after CNN processing
+        hidden_size = getattr(cfg, "hidden_size", 256)  # feature size after CNN processing
         k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
         s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
 
@@ -38,16 +38,15 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
         # experiment used model
         self.image_conv = nn.Sequential(
 
-            nn.Conv2d(3, 16, k_sizes[0], s_sizes[0]),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            #nn.MaxPool2d(2, 2),
-
-            nn.Conv2d(16, 32, k_sizes[1], s_sizes[1]),
+            nn.Conv2d(3, 32, k_sizes[0], s_sizes[0]),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(32, 64, k_sizes[2], s_sizes[2]),
+            nn.Conv2d(32, 64, k_sizes[1], s_sizes[1]),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 64, k_sizes[2], s_sizes[2]),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
@@ -62,6 +61,7 @@ class Model(nn.Module, torch_rl.RecurrentACModel):
 
         self.fc1 = nn.Sequential(
             nn.Linear(self.image_embedding_size, hidden_size),
+            #nn.LayerNorm(hidden_size),
             nn.ReLU(inplace=True),
         )
 

@@ -7,6 +7,7 @@ import torch_rl
 from models.model_icm_like import WorldsPolicyModel
 from models.utils import initialize_parameters2
 
+
 class DisagreementModel(nn.Module, torch_rl.RecurrentACModel):
     def __init__(self, cfg, obs_space, action_space, use_memory=False):
         super().__init__()
@@ -27,7 +28,7 @@ class DisagreementModel(nn.Module, torch_rl.RecurrentACModel):
 
         # Create dynamics list
         nr_heads = getattr(cfg, "nr_dyn", 5)
-        self.dyn_list = [DynamicsModel(cfg, obs_space, action_space) for _ in nr_heads]
+        self.dyn_list = nn.ModuleList([DynamicsModel(cfg, obs_space, action_space) for _ in range(nr_heads)])
 
     @property
     def memory_size(self):
@@ -45,7 +46,7 @@ class RandomFeatureExtractor(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        self.embedding_size = getattr(cfg, "memory_size", 512)
+        self._embedding_size = getattr(cfg, "embedding_size", 512)
         k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
         s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
 
@@ -70,7 +71,7 @@ class RandomFeatureExtractor(nn.Module):
 
         # Consider embedding out of fc1
         self.fc1 = nn.Sequential(
-            nn.Linear(self._image_embedding_size, self._image_embedding_size),
+            nn.Linear(self._image_embedding_size, self._embedding_size),
             nn.ReLU(inplace=True)
         )
 
@@ -79,6 +80,14 @@ class RandomFeatureExtractor(nn.Module):
     @property
     def embedding_size(self):
         return self._embedding_size
+
+    @property
+    def memory_size(self):
+        return self._embedding_size
+
+    @property
+    def network_type(self):
+        return "random"
 
     def forward(self, x):
         b_size = x.size()
@@ -99,8 +108,8 @@ class InverseDynamicsModel(nn.Module):
         n = obs_space["image"][0]
         m = obs_space["image"][1]
 
-        hidden_size = getattr(cfg, "hidden_size", 512)
-        self._memory_size = memory_size = getattr(cfg, "memory_size", 512)
+        hidden_size = getattr(cfg, "embedding_size", 512)
+        self._memory_size = memory_size = getattr(cfg, "embedding_size", 512)
         self.action_space = torch.Size((action_space.n, ))
         k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
         s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
@@ -156,6 +165,10 @@ class InverseDynamicsModel(nn.Module):
     @property
     def embedding_size(self):
         return self._embedding_size
+
+    @property
+    def network_type(self):
+        return "inverse_dynamics"
 
     def forward(self, x, memory, action_prev):
         b_size = x.size()

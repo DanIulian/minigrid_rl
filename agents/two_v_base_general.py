@@ -177,14 +177,18 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         exps.returnn_int = exps.value_int + exps.advantage_int
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
-    def augment_exp(self, exps):
+    def augment_exp(self, exps, curiosity_model=None):
 
         # from exp (P * T , ** ) -> (T (rollout length), P, **)
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
         env = self.env
-        agworld_network = self.acmodel.curiosity_model
+
+        if curiosity_model is None:
+            agworld_network = self.acmodel.curiosity_model
+        else:
+            agworld_network = curiosity_model
 
         shape = torch.Size([num_procs, num_frames_per_proc])
         frame_exp = Namespace()
@@ -260,10 +264,6 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
 
     @abstractmethod
     def get_save_data(self):
-        raise NotImplemented
-
-    @abstractmethod
-    def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
         raise NotImplemented
 
     def add_extra_experience(self, exps: DictList):

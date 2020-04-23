@@ -5,7 +5,8 @@
 import numpy as np
 import os
 import torch
-
+import torch.nn
+import torch.nn.functional as F
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
@@ -33,27 +34,38 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
-        eval_envs = kwargs.get("eval_envs", [])
 
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
         self.nminibatches = getattr(cfg, "nminibatches", 4)
         self.out_dir = getattr(cfg, "out_dir", None)
-        self.pre_fill_memories  = getattr(cfg, "pre_fill_memories", 1)
+        self.pre_fill_memories = getattr(cfg, "pre_fill_memories", 1)
 
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 5)
+
+        fe_type = acmodel.feature_extractor.network_type
+        if fe_type == "random":
+            intrinsic_reward_fn = self.calculate_int_reward_rand
+        elif fe_type == "inverse_dynamics":
+            intrinsic_reward_fn = self.calculate_int_reward_inv
+        else:
+            raise ValueError("No such intrinsic reward function")
 
         envs = ParallelEnv(envs)
         super().__init__(envs, acmodel, num_frames_per_proc, discount,
                          gae_lambda, entropy_coef, value_loss_coef,
                          max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                         exp_used_pred, intrinsic_reward_fn=self.calculate_intrinsic_reward)
+                         exp_used_pred, intrinsic_reward_fn=intrinsic_reward_fn)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
         self.batch_size = batch_size
         self.int_coeff = cfg.int_coeff
         self.ext_coeff = cfg.ext_coeff
+
+        # Intrinsic reward parameters
+        self.dyn_batch_size = getattr(cfg, "disagreement_batch_size", 64)
+        self.dyn_nr_epochs = getattr(cfg, "disagreement_nr_epochs", 3)
 
         assert self.batch_size % self.recurrence == 0
 
@@ -91,20 +103,21 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.optimizer_policy = getattr(torch.optim, optimizer)(
             self.acmodel.policy_model.parameters(), **optimizer_args)
 
-        self.optimizer_agworld = getattr(torch.optim, optimizer)(
-            self.acmodel.curiosity_model.parameters(), **optimizer_args)
+        self.optimizer_fe = getattr(torch.optim, optimizer)(
+            self.acmodel.feature_extractor.parameters(), **optimizer_args
+        )
 
-        self.optimizer_evaluator = getattr(torch.optim, optimizer)(
-            self.acmodel.evaluator_network.parameters(), **optimizer_args)
-
-        self.optimizer_evaluator_base = getattr(torch.optim, optimizer)(
-            self.acmodel.base_evaluator_network.parameters(), **optimizer_args)
+        self.optimizer_dyn = [getattr(torch.optim, optimizer)(
+            dyn_model.parameters(), **optimizer_args)
+            for dyn_model in self.acmodel.dyn_list]
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
-            self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
-            self.optimizer_evaluator.load_state_dict(agent_data["optimizer_evaluator"])
-            self.optimizer_evaluator_base.load_state_dict(agent_data["optimizer_evaluator_base"])
+            self.optimizer_fe.load_state_dict(agent_data["optimizer_feature_extractor"])
+
+            for dyn_opt, dyn_opt_state in zip(self.optimizer_dyn, agent_data["optimizer_dyn_list"]):
+                dyn_opt.load_state_dict(dyn_opt_state)
+
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
     def update_parameters(self):
@@ -254,7 +267,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.updates_cnt += 1
         return logs
 
-    def _get_batches_starting_indexes(self, recurrence=None, padding=0):
+    def _get_batches_starting_indexes(self, batch_size=None, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
 
@@ -274,6 +287,9 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         if recurrence is None:
             recurrence = self.recurrence
 
+        if batch_size is None:
+            batch_size = self.batch_size
+
         # Consider Num frames list ordered P * T
         if padding == 0:
             indexes = np.arange(0, self.num_frames, recurrence)
@@ -290,7 +306,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # Shift starting indexes by recurrence//2 half the time
         self.batch_num += 1
 
-        num_indexes = self.batch_size // recurrence
+        num_indexes = batch_size // recurrence
         batches_starting_indexes = [
             indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)
         ]
@@ -300,55 +316,113 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
     def get_save_data(self):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
-            "optimizer_agworld": self.optimizer_agworld.state_dict(),
-            "optimizer_evaluator": self.optimizer_evaluator.state_dict(),
+            "optimizer_fe": self.optimizer_fe.state_dict(),
+            "optimizer_dyn_list": [dyn_opt.state_dict() for dyn_opt in self.optimizer_dyn],
             "predictor_rms": self.predictor_rms,
         })
 
-    def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
+    def calculate_int_reward_rand(self, exps: DictList, dst_intrinsic_r: torch.FloatTensor):
 
-        # ------------------------------------------------------------------------------------------
         # Run worlds models & generate memories
 
-        agworld_network = self.acmodel.curiosity_model
-        evaluator_network = self.acmodel.evaluator_network
-        base_eval_network = self.acmodel.base_evaluator_network
+        feature_ext_network = self.acmodel.feature_extractor
+        dyn_list = self.acmodel.dyn_list
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
-        beta = 0.2  # loss factor for Forward and Dynamics Models
+        batch_size = self.dyn_batch_size
+        nr_epochs = self.dyn_nr_epochs
 
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
-        f, prev_frame_exps = self.augment_exp(exps)
-
-        # Save state
-        out_dir = self.out_dir
-        updates_cnt = self.updates_cnt
-        save_experience_batch = self.save_experience_batch
-        save = save_experience_batch > 0 and (updates_cnt + 1) % save_experience_batch == 0
-
-        # ------------------------------------------------------------------------------------------
-        if self.pre_fill_memories:
-            prev_actions = prev_frame_exps.actions_onehot
-            for i in range(num_frames_per_proc - 1):
-                obs = f.obs_image[i]
-                masks = f.mask[i]
-
-                # Do one agent-environment interaction
-                with torch.no_grad():
-                    _, f.agworld_mems[i + 1], f.agworld_embs[i] = \
-                        agworld_network(obs, f.agworld_mems[i] * masks, prev_actions)
-                    prev_actions = f.actions_onehot[i]
+        f, prev_frame_exps = self.augment_exp(exps, feature_ext_network)
 
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards
 
-        pred_next_state = torch.zeros(num_frames_per_proc + 1, num_procs,
-                                      agworld_network.memory_size, device=device)
-        next_state = torch.zeros(num_frames_per_proc + 1, num_procs,
-                                 agworld_network.memory_size, device=device)
+        pred_next_state = torch.zeros(num_frames_per_proc + 1,
+                                      num_procs,
+                                      len(dyn_list),
+                                      feature_ext_network.embedding_size,
+                                      device=device)
+
+        #feature_ext_network.eval()
+        map(lambda x: x.eval(), dyn_list)
+        for i in range(num_frames_per_proc):
+            obs = f.obs_image[i]
+            actions = f.actions_onehot[i]
+
+            #Do one agent-environment interaction
+            with torch.no_grad():
+                state_embedding = feature_ext_network(obs)
+                f.agworld_embs[i] = state_embedding.detach()
+
+                for j, dyn_model in enumerate(dyn_list):
+                    pred_next_state[i, :, j, :] = dyn_model(state_embedding, actions)
+        map(lambda x: x.train(), dyn_list)
+        #feature_ext_network.train()
+
+        dst_intrinsic_r = pred_next_state.var(dim=2).mean(dim=-1).detach()
+
+        # --Normalize intrinsic reward
+        #self.predictor_rff.reset()
+        int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
+        for i in reversed(range(self.num_frames_per_proc)):
+            int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
+
+        self.predictor_rms.update(int_rff.view(-1))  # running mean statisics
+        dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
+
+        # ------------------------------------------------------------------------------------------
+        # -- Optimize Dynamics
+        optimizer_dyn = self.optimizer_dyn
+        max_grad_norm = self.max_grad_norm
+
+        # _________ for all tensors below, T x P -> P x T -> P * T _______________________
+        f = self.flip_back_experience(f)
+
+        self.train_dynamic_models(f.agworld_embs,
+                                  f.actions_onehot,
+                                  batch_size,
+                                  nr_epochs,
+                                  max_grad_norm)
+
+        self.aux_logs["mean_intrinsic_rewards"] = np.mean(dst_intrinsic_r.cpu().numpy())
+        self.aux_logs["var_intrinsic_rewards"] = np.var(dst_intrinsic_r.cpu().numpy())
+
+        return dst_intrinsic_r
+
+    def calculate_int_reward_inv(self, exps: DictList, dst_intrinsic_r: torch.FloatTensor):
+
+        # ------------------------------------------------------------------------------------------
+        # Run worlds models & generate memories
+
+        feature_ext_network = self.acmodel.feature_extractor
+        dyn_list = self.acmodel.dyn_list
+
+        num_procs = self.num_procs
+        num_frames_per_proc = self.num_frames_per_proc
+        device = self.device
+        batch_size = self.dyn_batch_size
+        num_epochs = self.dyn_nr_epochs
+
+        # ------------------------------------------------------------------------------------------
+        # Get observations and full states
+        f, prev_frame_exps = self.augment_exp(exps, feature_ext_network)
+
+        # ------------------------------------------------------------------------------------------
+        # -- Compute Intrinsic rewards
+        # -- And pre-fill memories
+
+        pred_next_state = torch.zeros(num_frames_per_proc + 1,
+                                      num_procs,
+                                      len(dyn_list),
+                                      feature_ext_network.memory_size,
+                                      device=device)
+
+        feature_ext_network.eval()
+        map(lambda x: x.eval(), dyn_list)
 
         prev_actions = prev_frame_exps.actions_onehot
         prev_memory = prev_frame_exps.agworld_mems
@@ -357,86 +431,55 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
             masks = f.mask[i]
             actions = f.actions_onehot[i]
 
-            #Do one agent-environment interaction
+            # Do one agent-environment interaction & Store the memories for future use
             with torch.no_grad():
-                _, next_state[i], embs = agworld_network(
-                    obs, prev_memory * masks, prev_actions)
+                _, current_state, obs_embeddings = feature_ext_network(obs,
+                                                                       prev_memory * masks,
+                                                                       prev_actions)
 
-                pred_next_state[i + 1] = agworld_network.forward_state(
-                    next_state[i], actions)
+                for j, dyn_model in enumerate(dyn_list):
+                    pred_next_state[i, :, j, :] = dyn_model(current_state, actions)
 
+                f.agworld_embs[i] = obs_embeddings
+                if i < num_frames_per_proc - 1:
+                    f.agworld_mems[i + 1] = current_state
+                prev_memory = current_state
                 prev_actions = actions
-                prev_memory = next_state[i]
 
-        # TODO fix the last intrinsic reward value as it is pred - 0
-        dst_intrinsic_r = (pred_next_state[1:] - next_state[1:]).detach().pow(2).sum(2)
+        feature_ext_network.train()
+        map(lambda x: x.train(), dyn_list)
+
+        dst_intrinsic_r = pred_next_state.var(dim=2).mean(-1).detach()
 
         # --Normalize intrinsic reward
-        #self.predictor_rff.reset() # do you have to rest it every time ???
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
-
         for i in reversed(range(self.num_frames_per_proc)):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
 
         self.predictor_rms.update(int_rff.view(-1))  # running mean statisics
-        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
-        #if save:
-        #    f.dst_intrinsic = dst_intrinsic_r.clone()
-        #    torch.save(f, f"{out_dir}/f_{updates_cnt}")
-        #    delattr(f, "dst_intrinsic")
-
-
         # ------------------------------------------------------------------------------------------
-        # -- Optimize ICM
-        optimizer_evaluator = self.optimizer_evaluator
-        optimizer_evaluator_base = self.optimizer_evaluator_base
-        optimizer_agworld = self.optimizer_agworld
+        # -- Optimize Dynamics
+        optimizer_fe = self.optimizer_fe
         recurrence_worlds = self.recurrence_worlds
-
         max_grad_norm = self.max_grad_norm
 
-        # ------------------------------------------------------------------------------------------
         # _________ for all tensors below, T x P -> P x T -> P * T _______________________
         f = self.flip_back_experience(f)
-        # ------------------------------------------------------------------------------------------
 
-        loss_m_state = torch.nn.MSELoss()
-        loss_m_act = torch.nn.CrossEntropyLoss()
-        loss_m_eval = torch.nn.CrossEntropyLoss()
-        loss_m_eval_base = torch.nn.CrossEntropyLoss()
+        loss_m_inv = torch.nn.CrossEntropyLoss()
+        log_inv_loss = []
 
-        log_state_loss = []
-        log_state_loss_same = []
-        log_state_loss_diffs = []
-
-        log_act_loss = []
-        log_act_loss_same = []
-        log_act_loss_diffs = []
-
-        log_evaluator_loss = []
-        log_base_evaluator_loss = []
-
+        # First train the inverse model
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
             agworld_mem = f.agworld_mems[inds].detach()
             new_agworld_emb = [None] * recurrence_worlds
             new_agworld_mem = [None] * recurrence_worlds
 
-            state_batch_loss = torch.zeros(1, device=self.device)[0]
-
-            state_batch_loss_same = torch.zeros(1, device=self.device)[0]
-            state_batch_loss_diffs = torch.zeros(1, device=self.device)[0]
-
-            act_batch_loss = torch.zeros(1, device=self.device)[0]
-            act_batch_loss_same = torch.zeros(1, device=self.device)[0]
-            act_batch_loss_diff = torch.zeros(1, device=self.device)[0]
-            evaluator_batch_loss = torch.zeros(1, device=self.device)[0]
-            evaluator_base_batch_loss = torch.zeros(1, device=self.device)[0]
-
-            log_grad_agworld_norm = []
-            log_grad_eval_norm = []
+            inv_batch_loss = torch.zeros(1, device=self.device)[0]
+            log_grad_inv_norm = []
 
             # -- Agent world
             for i in range(recurrence_worlds):
@@ -444,149 +487,107 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
                 obs = f.obs_image[inds + i].detach()
                 mask = f.mask[inds + i]
                 prev_actions_one = f.actions_onehot[inds + i - 1].detach()
-                pos = f.position[inds + i].detach()
 
                 # Forward pass Agent Net for memory
-                _, agworld_mem, new_agworld_emb[i] = agworld_network(
-                    obs, agworld_mem * mask, prev_actions_one)
+                _, agworld_mem, new_agworld_emb[i] = feature_ext_network(obs,
+                                                                         agworld_mem * mask,
+                                                                         prev_actions_one)
                 new_agworld_mem[i] = agworld_mem
 
-                # Compute loss for evaluator using cross entropy loss
-                pred_pos = evaluator_network(new_agworld_mem[i].detach())
-                target_pos = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
-
-                evaluator_batch_loss += loss_m_eval(pred_pos, target_pos)
-
-                # Compute loss for a random input using cross entropy to obtain a base
-                # for evaluator
-
-                random_input = torch.rand_like(new_agworld_mem[i].detach())
-                pred_pos_base = base_eval_network(random_input)
-                target_pos_base = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
-                evaluator_base_batch_loss += loss_m_eval_base(pred_pos_base, target_pos_base)
-
             # Go back and predict action(t) given state(t) & embedding (t+1)
-            # and predict state(t + 1) given state(t) and action(t)
             for i in range(recurrence_worlds - 1):
-
-                obs = f.obs_image[inds + i].detach()
-                next_obs = f.obs_image[inds + i + 1].detach()
-
-                # take masks and convert them to 1D tensor for indexing
-                # use next masks because done gives you the new game obs
-                next_mask = f.mask[inds + i + 1].long().detach()
-                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
-
                 crt_actions = f.action[inds + i].long().detach()
-                crt_actions_one = f.actions_onehot[inds + i].detach()
 
-                pred_act = agworld_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
-
-                pred_state = agworld_network.forward_state(new_agworld_mem[i], crt_actions_one)
-
-                act_batch_loss += loss_m_act(pred_act, crt_actions)
-                state_batch_loss += loss_m_state(pred_state, new_agworld_mem[i + 1].detach())
-
-                # if all episodes ends at once, can't compute same/diff losses
-                if next_mask.sum() == 0:
-                    continue
-
-                next_mask_as_bool = next_mask.to(torch.bool)
-                same = (obs[next_mask_as_bool] == next_obs[next_mask_as_bool]).all(1).all(1).all(1)
-
-                s_pred_act = pred_act[next_mask_as_bool]
-                s_crt_act = crt_actions[next_mask_as_bool]
-
-                s_pred_state = pred_state[next_mask_as_bool]
-                s_crt_state = (new_agworld_mem[i + 1].detach())[next_mask_as_bool]
-
-                # if all are same/diff take care to empty tensors
-                if same.sum() == same.shape[0]:
-                    act_batch_loss_same += loss_m_act(s_pred_act[same], s_crt_act[same])
-                    state_batch_loss_same += loss_m_state(s_pred_state[same], s_crt_state[same])
-
-                elif same.sum() == 0:
-                    act_batch_loss_diff += loss_m_act(s_pred_act[~same], s_crt_act[~same])
-                    state_batch_loss_diffs += loss_m_state(s_pred_state[~same], s_crt_state[~same])
-
-                else:
-                    act_batch_loss_same += loss_m_act(s_pred_act[same], s_crt_act[same])
-                    act_batch_loss_diff += loss_m_act(s_pred_act[~same], s_crt_act[~same])
-
-                    state_batch_loss_same += loss_m_state(s_pred_state[same], s_crt_state[same])
-                    state_batch_loss_diffs += loss_m_state(s_pred_state[~same], s_crt_state[~same])
+                pred_act = feature_ext_network.forward_action(new_agworld_mem[i], new_agworld_emb[i+1])
+                inv_batch_loss += loss_m_inv(pred_act, crt_actions)
 
             # -- Optimize models
-            act_batch_loss /= (recurrence_worlds - 1)
-            state_batch_loss /= (recurrence_worlds - 1)
-            evaluator_batch_loss /= recurrence_worlds
-            evaluator_base_batch_loss /= recurrence_worlds
 
-            act_batch_loss_same /= (recurrence_worlds - 1)
-            act_batch_loss_diff /= (recurrence_worlds - 1)
+            inv_batch_loss /= (recurrence_worlds - 1)
+            optimizer_fe.zero_grad()
+            inv_batch_loss.backward()
 
-            state_batch_loss_same /= (recurrence_worlds - 1)
-            state_batch_loss_diffs /= (recurrence_worlds - 1)
-
-            ag_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
-
-            optimizer_agworld.zero_grad()
-            optimizer_evaluator.zero_grad()
-            optimizer_evaluator_base.zero_grad()
-
-            ag_loss.backward()
-            evaluator_batch_loss.backward()
-            evaluator_base_batch_loss.backward()
-
-            grad_agworld_norm = sum(
-                p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
-                if p.grad is not None
-            ) ** 0.5
-            grad_eval_norm = sum(
-                p.grad.data.norm(2).item() ** 2 for p in evaluator_network.parameters()
+            grad_inv_norm = sum(
+                p.grad.data.norm(2).item() ** 2 for p in feature_ext_network.parameters()
                 if p.grad is not None
             ) ** 0.5
 
-            torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
-            torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-            torch.nn.utils.clip_grad_norm_(base_eval_network.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(feature_ext_network.parameters(), max_grad_norm)
+            optimizer_fe.step()
 
-            #log some shit
+            # log some shit
+            log_inv_loss.append(inv_batch_loss.item())
+            log_grad_inv_norm.append(grad_inv_norm)
 
-            log_act_loss.append(act_batch_loss.item())
-            log_state_loss.append(state_batch_loss.item())
-            log_evaluator_loss.append(evaluator_batch_loss.item())
-            log_base_evaluator_loss.append(evaluator_base_batch_loss.item())
+        # Now train the dynamic models
+        self.train_dynamic_models(f.agworld_embs,
+                                  f.actions_onehot,
+                                  batch_size,
+                                  num_epochs,
+                                  max_grad_norm)
 
-            log_grad_agworld_norm.append(grad_agworld_norm)
-            log_grad_eval_norm.append(grad_eval_norm)
+        # ------------------------------------------------------------------------------------------
+        # Log some values
+        self.aux_logs['next_action_loss'] = np.mean(log_inv_loss)
+        self.aux_logs['grad_norm_inv'] = np.mean(log_grad_inv_norm)
 
-            log_act_loss_diffs.append(act_batch_loss_diff.item())
-            log_act_loss_same.append(act_batch_loss_same.item())
+        self.aux_logs["mean_intrinsic_rewards"] = np.mean(dst_intrinsic_r.cpu().numpy())
+        self.aux_logs["var_intrinsic_rewards"] = np.var(dst_intrinsic_r.cpu().numpy())
 
-            log_state_loss_same.append(state_batch_loss_same.item())
-            log_state_loss_diffs.append(state_batch_loss_diffs.item())
+        return dst_intrinsic_r
 
-            optimizer_evaluator.step()
-            optimizer_agworld.step()
-            optimizer_evaluator_base.step()
+    def train_dynamic_models(self,
+                             current_embeddings: torch.Tensor,
+                             actions: torch.Tensor,
+                             batch_size: int,
+                             nr_epochs: int,
+                             max_grad_norm: float):
+
+        dyn_list = self.acmodel.dyn_list
+        dyn_optimizer = self.optimizer_dyn
+
+        log_state_loss = []
+        log_grad_dyn_norm = []
+
+        for _ in range(nr_epochs):
+            epoch_loss = 0.0
+            batch_idx = self._get_batches_starting_indexes(batch_size=batch_size,
+                                                           recurrence=1,
+                                                           padding=1)
+            # Randomly select the model to train on every batch
+            dyn_idx = np.random.randint(0, len(dyn_list), len(batch_idx))
+            for i, inds in enumerate(batch_idx):
+
+                emb = current_embeddings[inds].detach()
+                next_emb = current_embeddings[inds + 1].detach()
+                act = actions[inds]
+
+                selected_model = dyn_idx[i]
+
+                dyn_optimizer[selected_model].zero_grad()
+
+                predicted_next_state = dyn_list[selected_model](emb, act)
+
+                loss = F.mse_loss(predicted_next_state, next_emb, reduction="mean")
+                epoch_loss += loss.item()
+
+                loss.backward()
+
+                grad_dyn_norm = sum(
+                    p.grad.data.norm(2).item() ** 2 for p in dyn_list[selected_model].parameters()
+                    if p.grad is not None
+                ) ** 0.5
+                log_grad_dyn_norm.append(grad_dyn_norm)
+
+                torch.nn.utils.clip_grad_norm_(dyn_list[selected_model].parameters(), max_grad_norm)
+                dyn_optimizer[selected_model].step()
+
+            log_state_loss.append(epoch_loss / len(batch_idx))
 
         # ------------------------------------------------------------------------------------------
         # Log some values
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
-        self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
-        self.aux_logs['position_loss'] = np.mean(log_evaluator_loss)
-        self.aux_logs['base_positon_loss'] = np.mean(log_base_evaluator_loss)
-        self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
-        self.aux_logs['grad_norm_pos'] = np.mean(log_grad_eval_norm)
-
-        self.aux_logs['next_state_loss_same'] = np.mean(log_state_loss_same)
-        self.aux_logs['next_state_loss_diffs'] = np.mean(log_state_loss_diffs)
-
-        self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
-        self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
-
-        return dst_intrinsic_r
+        self.aux_logs['grad_norm_dyn'] = np.mean(log_grad_dyn_norm)
 
     def add_extra_experience(self, exps: DictList):
         # Process

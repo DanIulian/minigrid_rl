@@ -101,12 +101,14 @@ def obs_preprocess(env_cfg: Namespace, main_cfg: Namespace, observation_space, m
     max_image_value = env_cfg.max_image_value
     normalize_img = env_cfg.normalize
     permute = getattr(env_cfg, "permute", False)
+    obs_type = getattr(env_cfg, "obs_type", "compact")
     obss_preprocessor = getattr(env_cfg, "obss_preprocessor", None)
     obs_space, preprocess_obss = utils.get_obss_preprocessor(main_cfg.env, observation_space,
                                                              model_dir,
                                                              max_image_value=max_image_value,
                                                              normalize=normalize_img,
                                                              permute=permute,
+                                                             obs_type=obs_type,
                                                              type=obss_preprocessor)
     return obs_space, preprocess_obss
 

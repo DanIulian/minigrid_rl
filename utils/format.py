@@ -29,7 +29,7 @@ def get_obss_preprocessor(*args, type=None, **kwargs):
 
 
 def get_obss_preprocessor_cond(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                               permute=False):
+                               permute=False, obs_type="compact"):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -61,7 +61,15 @@ def get_obss_preprocessor_cond(env_id, obs_space, model_dir, max_image_value=15.
 
 
 def get_obss_preprocessor_simple(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                                 permute=False):
+                                 permute=False, obs_type="compact"):
+
+    if obs_type == "compact":
+        preprocess_images_fn = preprocess_images
+    elif obs_type == "rgb":
+        preprocess_images_fn = preprocess_rgb_images
+    else:
+        raise ValueError("Wrong observation type")
+
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -70,8 +78,8 @@ def get_obss_preprocessor_simple(env_id, obs_space, model_dir, max_image_value=1
 
         def preprocess_obss(obss, device=None, permute=permute):
             return torch_rl.DictList({
-                "image": preprocess_images([obs["image"] for obs in obss], device=device,
-                                           max_image_value=max_image_value, normalize=normalize),
+                "image": preprocess_images_fn([obs["image"] for obs in obss], device=device,
+                                              max_image_value=max_image_value, normalize=normalize),
             })
         preprocess_obss.vocab = vocab
 
@@ -82,7 +90,7 @@ def get_obss_preprocessor_simple(env_id, obs_space, model_dir, max_image_value=1
 
         def preprocess_obss(obss, device=None):
             return torch_rl.DictList({
-                "image": preprocess_images(obss, device=device)
+                "image": preprocess_images_fn(obss, device=device)
             })
 
     else:
@@ -92,7 +100,14 @@ def get_obss_preprocessor_simple(env_id, obs_space, model_dir, max_image_value=1
 
 
 def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                               permute=False):
+                                  permute=False, obs_type="compact"):
+    if obs_type == "compact":
+        preprocess_images_fn = preprocess_images
+    elif obs_type == "rgb":
+        preprocess_images_fn = preprocess_rgb_images
+    else:
+        raise ValueError("Wrong observation type")
+
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -101,8 +116,8 @@ def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=
 
         def preprocess_obss(obss, device=None, permute=permute):
             return torch_rl.DictList({
-                "image": preprocess_images([obs["image"] for obs in obss], device=device,
-                                           max_image_value=max_image_value, normalize=normalize),
+                "image": preprocess_images_fn([obs["image"] for obs in obss], device=device,
+                                              max_image_value=max_image_value, normalize=normalize),
                 "text": preprocess_texts([obs["mission"] for obs in obss], vocab, device=device)
             })
         preprocess_obss.vocab = vocab
@@ -114,7 +129,7 @@ def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=
 
         def preprocess_obss(obss, device=None):
             return torch_rl.DictList({
-                "image": preprocess_images(obss, device=device)
+                "image": preprocess_images_fn(obss, device=device)
             })
 
     else:
@@ -124,7 +139,7 @@ def get_obss_preprocessor_default(env_id, obs_space, model_dir, max_image_value=
 
 
 def get_obss_preprocessor_aux_in(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                                 permute=False, aux_in_size: int = 2):
+                                 permute=False, obs_type="compact", aux_in_size: int = 2):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": aux_in_size}
@@ -142,7 +157,7 @@ def get_obss_preprocessor_aux_in(env_id, obs_space, model_dir, max_image_value=1
 
 
 def get_obss_preprocessor_tensor(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
-                               permute=False):
+                                 permute=False, obs_type="compact"):
     # Check if it is a MiniGrid environment
     if re.match("MiniGrid-.*", env_id):
         obs_space = {"image": obs_space.spaces['image'].shape, "text": 100}
@@ -189,6 +204,18 @@ def preprocess_images(images, device=None, max_image_value=15., normalize=True, 
     images = torch.tensor(images, device=device, dtype=torch.float)
     if normalize:
         images.div_(max_image_value)
+    if permute:
+        images = images.permute(0, 3, 1, 2)
+    return images
+
+
+def preprocess_rgb_images(images, device=None, max_image_value=127.5, normalize=True, permute=False):
+    # Bug of Pytorch: very slow if not first converted to numpy array
+    images = numpy.array(images)
+    images = torch.tensor(images, device=device, dtype=torch.float)
+    if normalize:
+        images.div_(max_image_value)
+        images.sub_(1.0)
     if permute:
         images = images.permute(0, 3, 1, 2)
     return images
