@@ -19,14 +19,6 @@ class ICMModel(nn.Module, torch_rl.RecurrentACModel):
 
         self.curiosity_model = CuriosityModel(cfg, obs_space, action_space)
 
-        self.evaluator_network = EvaluationNet(cfg,
-                                               self.curiosity_model.memory_size,
-                                               cfg.width * cfg.height)
-
-        self.base_evaluator_network = EvaluationNet(cfg,
-                                                    self.curiosity_model.memory_size,
-                                                    cfg.width * cfg.height)
-
         self.memory_type = self.policy_model.memory_type
         self.use_memory = self.policy_model.use_memory
 
@@ -189,21 +181,3 @@ class CuriosityModel(nn.Module):
 
         x = self.fc_alpha(x)
         return x
-
-
-class EvaluationNet(nn.Module):
-    def __init__(self, cfg, obs_space, out_space):
-        super(EvaluationNet, self).__init__()
-
-        hidden_size = getattr(cfg, "hidden_size", 256)
-        self.fc1 = nn.Sequential(
-            nn.Linear(obs_space, hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, out_space),
-        )
-
-    def forward(self, x):
-        x = self.fc1(x)
-        return x
-
-

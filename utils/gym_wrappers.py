@@ -345,32 +345,6 @@ class RecordFullState(Wrapper):
         self.unwrapped.seed(seed=seed)
 
 
-class UniqueStates(gym.core.Wrapper):
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.counts = {}
-
-    def step(self, action):
-
-        obs, reward, done, info = self.env.step(action)
-
-        env = self.unwrapped
-        tup = (env.agentPos, env.agentDir, env.carrying.type, env.carrying.color)
-
-        # Get the count for this (s,a) pair
-        if tup in self.counts:
-            self.counts[tup] += 1
-        else:
-            self.counts[tup] += 1
-
-        return obs, reward, done, info
-
-    def reset(self, **kwargs):
-        self.counts = {}
-        return self.env.reset(**kwargs)
-
-
 def rotate_img(img, cw=True):
     if cw:
         # rotate cw
@@ -389,6 +363,7 @@ class OccupancyMap(Wrapper):
         super(OccupancyMap, self).__init__(env)
 
         env_name = env.spec.id
+
         self.actions = self.env.unwrapped.actions
         self.step_count = self.env.unwrapped.step_count
         self.counts = {}
@@ -447,7 +422,7 @@ class OccupancyMap(Wrapper):
         topX, topY, botX, botY = self.env.unwrapped.get_view_exts()
         maxX, maxY = self.occupancy.shape
         agent_dir = self.env.unwrapped.agent_dir
-        grid = self.env.unwrapped.grid.encode()[:,:,0]
+        grid = self.env.unwrapped.grid.encode()[:, :, 0]
         view = view[:, :, 0]
 
         # Rotate grid to map view
@@ -592,7 +567,7 @@ class AddIDasText(Wrapper):
         self.env.seed(seed=seed)
 
 
-def get_interactions_stats(ep_statistics):
+def get_interactions_stats(env_wrappers, ep_statistics):
 
     # process statistics about the agent's behaviour
     # in the environment
@@ -600,24 +575,27 @@ def get_interactions_stats(ep_statistics):
         "ep_completed": len(ep_statistics),
     }
 
-    if len(ep_statistics) == 0:
-        return logs
-
-    if "interactions" in ep_statistics[0]:
+    if "interactions" in env_wrappers:
         logs.update({
-            "doors_opened": 0, "doors_closed": 0, "doors_interactions": 0,
+            "doors_opened": 0, "doors_closed":  0, "doors_interactions": 0,
 
-            "keys_picked": 0, "keys_dropped": 0, "keys_interactions": 0,
+            "keys_picked":  0, "keys_dropped":  0, "keys_interactions":  0,
 
             "balls_picked": 0, "balls_dropped": 0, "balls_interactions": 0,
 
-            "boxes_picked": 0, "boxes_dropped": 0, "boxes_broken": 0, "boxes_interactions": 0,
+            "boxes_picked": 0, "boxes_dropped": 0, "boxes_broken": 0,
 
-            "objects_interactions": 0, "categories_interactions": 0,
-
-            "possible": 0, "seen": 0, "discovered": 0, "unique_states": 0, "same_state_max": 0,
-            "same_state_mean": 0, "same_state_std": 0,
+            "boxes_interactions": 0, "objects_interactions": 0, "categories_interactions": 0,
         })
+
+    if "occupancy" in env_wrappers:
+        logs.update({
+            "possible":         0, "seen":              0, "discovered": 0,
+            "unique_states":    0, "same_state_max":    0,
+            "same_state_mean":  0, "same_state_std":    0,})
+
+    if len(ep_statistics) == 0:
+        return logs
 
     for ep_info in ep_statistics:
         # Occupancy stats
@@ -627,14 +605,13 @@ def get_interactions_stats(ep_statistics):
 
         if "interactions" in ep_info:
             inter = ep_info['interactions']
-
             global no_categories, no_objects, cat_interactions, objects_interactions
             no_categories = 0.
             no_objects = 0.
             cat_interactions = 0.
             objects_interactions = 0.
 
-            def stats_interactions(objects, interactions):
+            def _stats_interactions(objects, interactions):
                 global no_categories, no_objects, cat_interactions, objects_interactions
                 no_categories += (len(objects) > 0)
                 no_objects += len(objects)
@@ -655,7 +632,7 @@ def get_interactions_stats(ep_statistics):
                 logs['doors_opened'] += doors_opened / doors_interactions
                 logs['doors_closed'] += doors_closed / doors_interactions
 
-            stats_interactions(inter['doors'], doors_interactions)
+            _stats_interactions(inter['doors'], doors_interactions)
 
             # count the mean number of interactions with boxes
             boxes_interactions, boxes_picked, boxes_dropped, boxes_broken = 0., 0., 0., 0.
@@ -673,7 +650,7 @@ def get_interactions_stats(ep_statistics):
                 logs['boxes_dropped'] += boxes_dropped / boxes_interactions
                 logs['boxes_broken'] += boxes_broken / boxes_interactions
 
-            stats_interactions(inter['boxes'], boxes_interactions)
+            _stats_interactions(inter['boxes'], boxes_interactions)
 
             # count the mean number of interactions with balls
             balls_interactions, balls_picked, balls_dropped = 0., 0., 0.
@@ -689,7 +666,7 @@ def get_interactions_stats(ep_statistics):
                 logs['balls_picked'] += balls_picked / balls_interactions
                 logs['balls_dropped'] += balls_dropped / balls_interactions
 
-            stats_interactions(inter['balls'], balls_interactions)
+            _stats_interactions(inter['balls'], balls_interactions)
 
             # count the mean number of interactions with keys
             keys_interactions, keys_picked, keys_dropped = 0., 0., 0.
@@ -705,10 +682,10 @@ def get_interactions_stats(ep_statistics):
                 logs['keys_picked'] += keys_picked / keys_interactions
                 logs['keys_dropped'] += keys_dropped / keys_interactions
 
-            stats_interactions(inter['keys'], keys_interactions)
+            _stats_interactions(inter['keys'], keys_interactions)
 
             # Calculate the total number of objects
-            reached_goal = inter['reward']
+            reached_goal = float(inter['reward'])
             logs['objects_interactions'] += (objects_interactions + reached_goal) / (no_objects + 1)
             logs['categories_interactions'] += (cat_interactions + reached_goal) / \
                                                (no_categories + 1)
@@ -730,6 +707,8 @@ class GetImportantInteractions(Wrapper):
     def __init__(self, env):
         super(GetImportantInteractions, self).__init__(env)
 
+        env_name = env.spec.id
+
         self.actions = self.env.unwrapped.actions
         self.step_count = self.env.unwrapped.step_count
 
@@ -748,7 +727,15 @@ class GetImportantInteractions(Wrapper):
             3: (0, -1)
         }
 
-    def step(self, action):
+        if "Dynamic-Obstacles" in env_name:
+            self.step = self._standard_step
+        else:
+            self.step = self._step
+
+    def _standard_step(self, action):
+        return self.env.step(action)
+
+    def _step(self, action):
 
         if action == 5:
             self.check_broken_box()
@@ -809,7 +796,6 @@ class GetImportantInteractions(Wrapper):
             obj_pos = tuple(front_obj.init_pos)
             self.objects['box'][obj_pos]['broken'] = 1
 
-
     def reset(self, **kwargs):
         obs = self.env.reset(**kwargs)
 
@@ -835,7 +821,7 @@ class GetImportantInteractions(Wrapper):
                             "nr_opened": 0,
                             "nr_closed": 0
                         }
-                    elif (v.type == 'key')  or (v.type == 'ball'):
+                    elif (v.type == 'key') or (v.type == 'ball'):
                         self.objects[v.type][(i, j)] = {
                             "color": v.color,
                             "nr_picked_up": 0,
@@ -1059,6 +1045,7 @@ def main():
             return
 
         if keyName == 'ESCAPE':
+            import sys
             sys.exit(0)
 
         action = 0
@@ -1072,9 +1059,9 @@ def main():
 
         elif keyName == 'SPACE':
             action = env.unwrapped.actions.toggle
-        elif keyName == 'PAGE_UP':
+        elif keyName == 'P':
             action = env.unwrapped.actions.pickup
-        elif keyName == 'PAGE_DOWN':
+        elif keyName == 'D':
             action = env.unwrapped.actions.drop
 
         elif keyName == 'RETURN':

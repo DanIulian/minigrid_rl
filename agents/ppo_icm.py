@@ -94,17 +94,10 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.optimizer_agworld = getattr(torch.optim, optimizer)(
             self.acmodel.curiosity_model.parameters(), **optimizer_args)
 
-        self.optimizer_evaluator = getattr(torch.optim, optimizer)(
-            self.acmodel.evaluator_network.parameters(), **optimizer_args)
-
-        self.optimizer_evaluator_base = getattr(torch.optim, optimizer)(
-            self.acmodel.base_evaluator_network.parameters(), **optimizer_args)
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
             self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
-            self.optimizer_evaluator.load_state_dict(agent_data["optimizer_evaluator"])
-            self.optimizer_evaluator_base.load_state_dict(agent_data["optimizer_evaluator_base"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
     def update_parameters(self):
@@ -301,7 +294,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
             "optimizer_agworld": self.optimizer_agworld.state_dict(),
-            "optimizer_evaluator": self.optimizer_evaluator.state_dict(),
             "predictor_rms": self.predictor_rms,
         })
 
@@ -311,8 +303,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # Run worlds models & generate memories
 
         agworld_network = self.acmodel.curiosity_model
-        evaluator_network = self.acmodel.evaluator_network
-        base_eval_network = self.acmodel.base_evaluator_network
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
@@ -390,8 +380,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         # ------------------------------------------------------------------------------------------
         # -- Optimize ICM
-        optimizer_evaluator = self.optimizer_evaluator
-        optimizer_evaluator_base = self.optimizer_evaluator_base
         optimizer_agworld = self.optimizer_agworld
         recurrence_worlds = self.recurrence_worlds
 
@@ -404,8 +392,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         loss_m_state = torch.nn.MSELoss()
         loss_m_act = torch.nn.CrossEntropyLoss()
-        loss_m_eval = torch.nn.CrossEntropyLoss()
-        loss_m_eval_base = torch.nn.CrossEntropyLoss()
 
         log_state_loss = []
         log_state_loss_same = []
@@ -414,9 +400,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         log_act_loss = []
         log_act_loss_same = []
         log_act_loss_diffs = []
-
-        log_evaluator_loss = []
-        log_base_evaluator_loss = []
 
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
@@ -432,11 +415,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             act_batch_loss = torch.zeros(1, device=self.device)[0]
             act_batch_loss_same = torch.zeros(1, device=self.device)[0]
             act_batch_loss_diff = torch.zeros(1, device=self.device)[0]
-            evaluator_batch_loss = torch.zeros(1, device=self.device)[0]
-            evaluator_base_batch_loss = torch.zeros(1, device=self.device)[0]
 
             log_grad_agworld_norm = []
-            log_grad_eval_norm = []
 
             # -- Agent world
             for i in range(recurrence_worlds):
@@ -450,20 +430,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                 _, agworld_mem, new_agworld_emb[i] = agworld_network(
                     obs, agworld_mem * mask, prev_actions_one)
                 new_agworld_mem[i] = agworld_mem
-
-                # Compute loss for evaluator using cross entropy loss
-                pred_pos = evaluator_network(new_agworld_mem[i].detach())
-                target_pos = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
-
-                evaluator_batch_loss += loss_m_eval(pred_pos, target_pos)
-
-                # Compute loss for a random input using cross entropy to obtain a base
-                # for evaluator
-
-                random_input = torch.rand_like(new_agworld_mem[i].detach())
-                pred_pos_base = base_eval_network(random_input)
-                target_pos_base = (self.env_height * pos[:, 0] + pos[:, 1]).type(torch.long)
-                evaluator_base_batch_loss += loss_m_eval_base(pred_pos_base, target_pos_base)
 
             # Go back and predict action(t) given state(t) & embedding (t+1)
             # and predict state(t + 1) given state(t) and action(t)
@@ -519,8 +485,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             # -- Optimize models
             act_batch_loss /= (recurrence_worlds - 1)
             state_batch_loss /= (recurrence_worlds - 1)
-            evaluator_batch_loss /= recurrence_worlds
-            evaluator_base_batch_loss /= recurrence_worlds
 
             act_batch_loss_same /= (recurrence_worlds - 1)
             act_batch_loss_diff /= (recurrence_worlds - 1)
@@ -531,35 +495,21 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             ag_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
 
             optimizer_agworld.zero_grad()
-            optimizer_evaluator.zero_grad()
-            optimizer_evaluator_base.zero_grad()
-
             ag_loss.backward()
-            evaluator_batch_loss.backward()
-            evaluator_base_batch_loss.backward()
 
             grad_agworld_norm = sum(
                 p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
                 if p.grad is not None
             ) ** 0.5
-            grad_eval_norm = sum(
-                p.grad.data.norm(2).item() ** 2 for p in evaluator_network.parameters()
-                if p.grad is not None
-            ) ** 0.5
 
-            torch.nn.utils.clip_grad_norm_(evaluator_network.parameters(), max_grad_norm)
             torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
-            torch.nn.utils.clip_grad_norm_(base_eval_network.parameters(), max_grad_norm)
 
             #log some shit
 
             log_act_loss.append(act_batch_loss.item())
             log_state_loss.append(state_batch_loss.item())
-            log_evaluator_loss.append(evaluator_batch_loss.item())
-            log_base_evaluator_loss.append(evaluator_base_batch_loss.item())
 
             log_grad_agworld_norm.append(grad_agworld_norm)
-            log_grad_eval_norm.append(grad_eval_norm)
 
             log_act_loss_diffs.append(act_batch_loss_diff.item())
             log_act_loss_same.append(act_batch_loss_same.item())
@@ -567,18 +517,13 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             log_state_loss_same.append(state_batch_loss_same.item())
             log_state_loss_diffs.append(state_batch_loss_diffs.item())
 
-            optimizer_evaluator.step()
             optimizer_agworld.step()
-            optimizer_evaluator_base.step()
 
         # ------------------------------------------------------------------------------------------
         # Log some values
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
         self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
-        self.aux_logs['position_loss'] = np.mean(log_evaluator_loss)
-        self.aux_logs['base_positon_loss'] = np.mean(log_base_evaluator_loss)
         self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
-        self.aux_logs['grad_norm_pos'] = np.mean(log_grad_eval_norm)
 
         self.aux_logs['next_state_loss_same'] = np.mean(log_state_loss_same)
         self.aux_logs['next_state_loss_diffs'] = np.mean(log_state_loss_diffs)
@@ -586,22 +531,29 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
         self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
 
+        self.aux_logs["mean_intrinsic_rewards"] = np.mean(dst_intrinsic_r.cpu().numpy())
+        self.aux_logs["var_intrinsic_rewards"] = np.var(dst_intrinsic_r.cpu().numpy())
+
         return dst_intrinsic_r
 
     def add_extra_experience(self, exps: DictList):
         # Process
-        full_positions = [self.obss[i][j]["position"]
-                       for j in range(self.num_procs)
-                       for i in range(self.num_frames_per_proc)]
-        # Process
-        full_states = [self.obss[i][j]["state"]
-                       for j in range(self.num_procs)
-                       for i in range(self.num_frames_per_proc)]
+        if "position" in self.obss[0][0].keys():
+            full_positions = [self.obss[i][j]["position"]
+                              for j in range(self.num_procs)
+                              for i in range(self.num_frames_per_proc)]
 
-        exps.states = preprocess_images(full_states, device=self.device)
-        max_pos_value = max(self.env_height, self.env_width)
-        exps.position = preprocess_images(full_positions,
-                                          device=self.device,
-                                          max_image_value=max_pos_value,
-                                          normalize=False)
+            max_pos_value = max(self.env_height, self.env_width)
+            exps.position = preprocess_images(full_positions,
+                                              device=self.device,
+                                              max_image_value=max_pos_value,
+                                              normalize=False)
+        # Process
+        if "state" in self.obss[0][0].keys():
+            full_states = [self.obss[i][j]["state"]
+                           for j in range(self.num_procs)
+                           for i in range(self.num_frames_per_proc)]
+
+            exps.states = preprocess_images(full_states, device=self.device)
+
         exps.obs_image = exps.obs.image

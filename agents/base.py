@@ -11,6 +11,7 @@ import collections
 from torch_rl.format import default_preprocess_obss
 from torch_rl.utils import DictList
 from utils.gym_wrappers import get_interactions_stats
+from functools import partial
 
 
 class BaseAlgo(ABC):
@@ -52,7 +53,7 @@ class BaseAlgo(ABC):
             a function that shapes the reward, takes an
             (observation, action, reward, done) tuple as an input
         min_stats_ep_batch: integer
-            TODO
+            minimum number of completed episodes to process statistics
         log_metrics_names: list
             TODO
         """
@@ -91,6 +92,14 @@ class BaseAlgo(ABC):
         self._initialize_experience_values(shape)
 
         self._initialize_log_values(log_metrics_names)
+
+        # make a list of wrappers used for aditional info
+        # about agent's performances
+        self._env_wrappers = []
+        if "GetImportantInteractions" in str(self.env[0][0]):
+            self._env_wrappers.append("interactions")
+        if "OccupancyMap" in str(self.env[0][0]):
+            self._env_wrappers.append("occupancy")
 
     def _initialize_experience_values(self, shape):
 
@@ -312,15 +321,14 @@ class BaseAlgo(ABC):
             logs[k] = np.mean(v)
 
         if self._finished_episodes < self._min_stats_ep_batch:
-            intearactions = get_interactions_stats([])
+            interactions = get_interactions_stats(self._env_wrappers, [])
         else:
-            intearactions = get_interactions_stats(self._ep_statistics)
+            interactions = get_interactions_stats(self._env_wrappers, self._ep_statistics)
+            # reset statistics
+            self._finished_episodes = 0
+            self._ep_statistics = []
 
-        logs.update(intearactions)
-
-        # reset statistics
-        self._finished_episodes = 0
-        self._ep_statistics = []
+        logs.update(interactions)
 
         return logs
 

@@ -1,7 +1,7 @@
 import pandas as pd
 import glob
 import os
-from pandas.io.json.normalize import nested_to_record
+from pandas.io.json._normalize import nested_to_record
 import yaml
 import natsort
 import numpy as np
@@ -12,6 +12,7 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
         -> Tuple[Dict, pd.DataFrame, pd.DataFrame]:
 
     # Assumes each directory (/ experiment run) has a unique cfg
+    # Get all config files of all runs for one experiment
     cfg_files = glob.glob(f"{experiment_path}/**/cfg.yaml", recursive=True)
     cfg_files = natsort.natsorted(cfg_files)
 
@@ -24,9 +25,10 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
     for run_index, cfg_file in enumerate(cfg_files):
         data[run_index] = dict()
 
+        # get the path to directory containing experiment results for one env
         dir_name = os.path.dirname(cfg_file)
-        data[run_index]["dir_name"] = dir_name
 
+        # get experiment name (env_name)
         run_name = dir_name.replace(experiment_path, "")
         run_name = run_name[1:] if run_name[0] == "/" else run_name
         data[run_index]["dir_name"] = run_name
@@ -44,8 +46,8 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
 
         run_id = config_data.get("run_id", 0)
 
-        data[run_index]["experiment_id"] = experiment_id
-        data[run_index]["run_id"] = run_id
+        data[run_index]["experiment_id"] = experiment_id  # represents the experiment number
+        data[run_index]["run_id"] = run_id  # represents the run number of the same experiment
 
         if flag:
             cfg_df = pd.DataFrame(nested_to_record(config_data, sep="."), index=[0])
@@ -72,6 +74,8 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
                 continue
 
             file_data = file_path
+
+            # read the log.csv file as dataframe using the right method
             if hasattr(pd, str(file_type)) and file_path is not None:
                 # Some bad header for experiments Fix
 
@@ -92,6 +96,8 @@ def get_experiment_files(experiment_path: str, files: dict= {}, flag=False) \
     cfgs = pd.concat(cfg_dfs)
     merge_dfs = cfgs.copy()
 
+    # concatenate all experiments data into one dataframe
+    # merge with the corresponding config info
     for join_df_name, join_df in join_dfs.items():
         other_df = pd.concat(join_df, sort=True)
         try:

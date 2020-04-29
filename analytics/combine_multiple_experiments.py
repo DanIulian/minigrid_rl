@@ -1,25 +1,6 @@
-"""
-Examples:
-python -m analytics.analyze_results 'exp_path  --plot_type error_bar --rolling_window 8 --plot_data
-                    rreturn_mean --groupby_clm "agent.name" --color_by "agent.name"
-
-MELT DATA
-python -m analytics.analyze_results 'exp_path'   --plot_type error_bar --rolling_window 8
-
-python -m analytics.analyze_results ./results/2020Apr27-214114_ppo_with_icm_2020   --plot_type error_bar --rolling_window 8 \
-    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type" \
-    --filter_by "env_cfg.max_episode_steps" --filter_value 400  \
-    --melt_data doors_opened keys_picked \
-    boxes_picked balls_picked boxes_broken
-
-
-python -m analytics.analyze_results 'exp_path' --plot_type error_bar --rolling_window 8
-    --plot_data Melt_value --groupby_clm "Melt_type" --color_by "Melt_type"
-    --filter_by "env_cfg.max_episode_steps" --filter_value 400  --melt_data doors_opened keys_picked
-    boxes_picked balls_picked balls_dropped doors_closed boxes_dropped keys_dropped boxes_broken
-
-"""
-
+'''
+    by Dan Iulian Muntean 2020
+'''
 import matplotlib
 from matplotlib.lines import Line2D
 import matplotlib.cm as cm
@@ -29,21 +10,24 @@ import os
 import re
 import pandas as pd
 import visdom
+import seaborn as sns
 
 from analytics.utils import get_experiment_files
 
 matplotlib.use('TkAgg')
-matplotlib.rcParams['figure.figsize'] = (16.0, 5)
+matplotlib.rcParams['figure.figsize'] = (20, 10)
 matplotlib.rcParams['axes.titlesize'] = 'medium'
 
 EXCLUDED_PLOTS = [
-    'experiment_id', 'frames',   'run_id',
-    'run_index',     'update',   'cfg_id',
-    'comment',       'commit',   'experiment',
-    'run_id_y',      'run_id_x', 'extra_logs',
-    'out_dir',       'resume',   'title',
+    'experiment_id', 'frames', 'run_id',
+    'run_index', 'update', 'cfg_id',
+    'comment', 'commit', 'experiment',
+    'run_id_y', 'run_id_x', 'extra_logs',
+    'out_dir', 'resume', 'title',
     '_experiment_parameters.env', 'run_name',
-    'cfg_dir',       'extra_logs', "duration",
+    'cfg_dir', 'extra_logs', "duration",
+    'ep_completed', 'FPS', 'num_frames_max',
+    'num_frames_min', 'num_frames_std'
 ]
 
 
@@ -85,7 +69,7 @@ def calc_wvar(group, avg_name, weight_name, mean):
     d = group[avg_name]
     w = group[weight_name]
     try:
-        return (((d - mean)**2) * w).sum() / w.sum()
+        return (((d - mean) ** 2) * w).sum() / w.sum()
     except ZeroDivisionError:
         return d.mean()
 
@@ -104,127 +88,125 @@ def calc_window_stats_helper(args):
     return calc_window_stats(*args)
 
 
-def get_out_dir(experiment_path, new_out_dir=False):
-    if not new_out_dir:
-        save_path = os.path.join(experiment_path, "analysis_0")
-    else:
-        import glob
-        import re
-        out = glob.glob(f"{experiment_path}/analysis_*")
-        if len(out) > 0:
-            last_idx = max([int(re.match(".*/analysis_(\d+).*", x).group(1)) for x in out
-                            if re.match(".*/analysis_(\d+).*", x)])
-        else:
-            last_idx = 0
-        save_path = os.path.join(experiment_path, f"analysis_{last_idx+1}")
+def plot_experiments(experiments_path,
+                     algorithm_names,
+                     plot_values=None,
+                     filter_by=None,
+                     filter_value=None,
+                     x_axis="frames",
+                     plot_type="lineplot",
+                     main_groupby="main.env",
+                     groupby_column="run_id_x",
+                     color_by="None",
+                     rolling_window=None,
+                     save_path="combined_results"):
+    '''
 
-    print(f"Saving to ...{save_path} (new dir:{new_out_dir})")
-    if not os.path.isdir(save_path):
-        os.mkdir(save_path)
-    return save_path
-
-
-def plot_experiment(experiment_path,
-                    x_axis="frames", plot_type="simple", kind="scatter", plot_data=None,
-                    main_groupby="main.env", groupby_clm="env_cfg.max_episode_steps",
-                    color_by="env_cfg.max_episode_steps",
-                    show_legend=False, simple=True,
-                    rolling_window=None, weights_cl="ep_completed", save_max_w=True,
-                    new_out_dir=False,
-                    max_frames=None,
-                    melt_data=None,
-                    filter_by=None, filter_value=None,
-                    sub_plots_squed=0):
-    """
-    :param plot_type: [simple, error_bar, color]
-    :param rolling_window: Used for error_bar kind
-    """
-
-    hack_7_plots = True
-    if hack_7_plots:
-        sub_plots_squed = 1
-
-    # ==============================================================================================
+    :param experiments_path:
+    :param algorithm_names:
+    :param plot_value:
+    :param filter_by:
+    :param filter_value:
+    :param x_axis:
+    :param plot_type:
+    :param main_groupby:
+    :param groupby_column:
+    :param color_by:
+    :param rolling_window:
+    :return:
+    '''
 
     # Validate config
-    assert (plot_type == "error_bar") == (rolling_window is not None), "Window only for error_bar"
-
-    # ==============================================================================================
+    assert (plot_type == "barplot") == (rolling_window is not None), "Window only for error_bar"
 
     # Get experiment data
-
-    data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
-    df[groupby_clm] = df[groupby_clm].apply(lambda x: str(x))
+    dfs = []
+    for algo_name, exp_path in zip(algorithm_names, experiments_path):
+        _, _, df = get_experiment_files(exp_path, files={"log.csv": "read_csv"})
+        df[groupby_column] = df[groupby_column].apply(lambda x: str(x))
+        df['algo_name'] = algo_name
+        dfs.append(df)
 
     # ==============================================================================================
     # -- FILTER VALUES
 
-    # if an experiment runs for no_frames, filtering by max_frames reduces the number of
-    # frames for which data is considered for that experiment
-    if max_frames:
-        print(f"Before max_frames filter: {len(df)}")
-        df = df[df["frames"] <= max_frames]
-        print(f"After max_frames filter: {len(df)}")
-
     # Hack to filter some experiments
     if filter_by and filter_value:
-        print(f"Before filter: {len(df)}")
-        print(f"Filter {filter_by} by {filter_value} from : [{df[filter_by].unique()}]")
-        filter_value = type(df.iloc[0][filter_by])(filter_value)
-        df = df[df[filter_by] == filter_value]
-        print(f"After filter: {len(df)}")
+        print("FILTERED")
+        filter_value = type(dfs[0].iloc[0][filter_by])(filter_value)
+        for df in dfs:
+            df = df[df[filter_by] == filter_value]
     else:
         print("NO FILTER APPLIED")
 
     # ==============================================================================================
-    # -- SPECIAL MELT data
-    if melt_data:
-        has_clm = [x in df.columns for x in melt_data]
-        assert all(has_clm), f"Incorrect melt list {melt_data}"
 
-        id_vars = list(set(df.columns) - set(melt_data))
-        df = pd.melt(df, id_vars=id_vars, var_name="Melt_type", value_name="Melt_value")
+    # Concat everything
+    data_frame = dfs[0]
+    for df in dfs[1:]:
+        data_frame = data_frame.append(df)
+
+    # For each subplot
+    experiments_group = data_frame.groupby(main_groupby, sort=False)
 
     # ==============================================================================================
-    # For each subplot
-    experiments_group = df.groupby(main_groupby, sort=False)
 
     # Get path to save plots
-    save_path = get_out_dir(experiment_path, new_out_dir=new_out_dir)
+    print(f"Saving to ...{os.getcwd()}/{save_path}")
+
+    full_save_path = os.getcwd() + "/" + save_path
+    if not os.path.isdir(full_save_path):
+        os.mkdir(full_save_path)
+    save_path = full_save_path
 
     # Run column name
-    run_idx = "run_id" if "run_id" in df.columns else "run_id_y"
+    run_idx = "run_id" if "run_id" in data_frame.columns else "run_id_y"
 
     # No plot data defined - plot all
-    if plot_data is None:
-        plot_data = set(df.columns) - set(EXCLUDED_PLOTS)
-        plot_data = [x for x in plot_data if "." not in x]
+    if plot_values is None:
+        plot_values = set(data_frame.columns) - set(EXCLUDED_PLOTS)
+        plot_values = [x for x in plot_values if "." not in x]
 
     # ==============================================================================================
     # -- Generate color maps for unique color_by subgroups,
 
-    no_colors = df[color_by].nunique()
-    subgroup_titles = list(df[color_by].unique())
+    no_colors = data_frame[color_by].nunique()
+    subgroup_titles = list(data_frame[color_by].unique())
 
     colors = cm.rainbow(np.linspace(0, 1, no_colors))
     colors_map = {x: y for x, y in zip(subgroup_titles, colors)}
     legend_elements = {color_name: Line2D(
-        [0], [0], marker='o', color=colors_map[color_name],  label='Scatter',
+        [0], [0], marker='o', color=colors_map[color_name], label='Scatter',
         markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
 
     # ==============================================================================================
-    # Custom
-    
-    export_max_window = True
-    compare_mthd = np.greater if save_max_w else np.less
-    export_data = dict()
 
-    # ==============================================================================================
+    def _complete_x_axis(df: pd.DataFrame, max_frames: int) -> pd.DataFrame:
+        '''Duplicate last row until max_frames have been achieved
+        '''
+        step_size = df['frames'].iloc[0]
+        last_frame = df['frames'].iloc[len(df['frames']) - 1]
+        new_df = pd.DataFrame(df)
+        for fr in range(last_frame + step_size, max_frames + step_size, step_size):
+            new_index = new_df.index[-1] + 1
+            new_df = pd.concat([new_df, new_df.tail(1)], ignore_index=True)
+            new_df.loc[new_index, 'frames'] = fr
 
-    size = int(pow(experiments_group.ngroups, 1/2))+1
+        return new_df
 
-    w_size = size + sub_plots_squed
-    h_size = size - sub_plots_squed
+    experiments = dict()
+    for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
+        max_x_value = exp_gdf['frames'].max()
+        df_list = []
+        for (caca, current_df) in exp_gdf.groupby(["algo_name", run_idx]):
+            df_list.append(_complete_x_axis(current_df, max_x_value))
+        experiments[experiment_name] = pd.concat(df_list, ignore_index=True)
+
+    # ================================================================================================
+
+    size = int(pow(experiments_group.ngroups, 1 / 2)) + 1
+    w_size = size
+    h_size = size
     print(w_size, h_size)
     for plot_f in plot_data:
         print(f"Plotting data {plot_f} ...")
@@ -344,7 +326,7 @@ def plot_experiment(experiment_path,
                              loc="lower right")
 
         #  TODO default
-        plt.gcf().suptitle(f"{plot_f.capitalize()} colored by max_steps", fontsize=12) #, y=-0.50,
+        plt.gcf().suptitle(f"{plot_f.capitalize()} colored by max_steps", fontsize=12)  # , y=-0.50,
         # plt.gcf().suptitle(f"Number of interactions colored by type", fontsize=12)  #, y=-0.50,
         # plt.gcf().suptitle(f"Fraction of interactions colored by object type", fontsize=12)
         # x=-0.2)
@@ -359,52 +341,54 @@ def plot_experiment(experiment_path,
         plt.savefig(f"{save_path}/{plot_f}.png")
         plt.close()
 
-    if export_max_window:
-        np.save(f"{save_path}/data", export_data)
-
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Plots plots.')
-    parser.add_argument('experiment_path')
-    parser.add_argument('--x_axis', default="frames")
-    parser.add_argument('--plot_type', default="simple")
-    parser.add_argument('--kind', default="scatter")
-    parser.add_argument('--plot_data', nargs='+', default=None)
-    parser.add_argument('--main_groupby', nargs='+', default="main.env")
-    parser.add_argument('--groupby_clm', default="env_cfg.max_episode_steps")
-    parser.add_argument('--color_by', default="env_cfg.max_episode_steps")
-    parser.add_argument('--no_legend', action='store_true')
-    parser.add_argument('--rolling_window', type=int, default=None)
-    parser.add_argument('--weights_cl', default="ep_completed")
-    parser.add_argument('--same_dir', action='store_true')
-    parser.add_argument('--save_max_w', action='store_false')
 
-    parser.add_argument('--max_frames', type=float, default=None)
-    parser.add_argument('--melt_data',  nargs='+', default=None)
-    parser.add_argument('--filter_by',  default=None)
-    parser.add_argument('--filter_value',  default=None)
-    parser.add_argument('--simple', action='store_true',  default=False)
+    parser.add_argument(
+        '--experiments_path', nargs='+', default=None,
+        help="Specify a list of experiments whose results to combine"
+    )
+    parser.add_argument(
+        '--algorithm_names', nargs='+', default=None,
+        help="Name of algorithms used for each experiment"
+    )
+    parser.add_argument(
+        '--plot_values', nargs='+', default=None,
+        help="List of logged values for which we want plots\n"
+             "If no value is specified, compute all available plots"
+    )
+    parser.add_argument(
+        '--filter_by', default=None,
+        help="Filter option. For example if you want to plot only for entrys where"
+             "ep_completed is not 0"
+    )
+    parser.add_argument(
+        '--filter_value', default=None
+    )
+    parser.add_argument(
+        '--x_axis', default="frames"
+    )
+    parser.add_argument(
+        '--plot_type', default="lineplot",
+        help="Type of seaborn plot to be used"
+    )
+    parser.add_argument('--main_groupby', nargs='+', default="main.env")
+    parser.add_argument('--groupby_column', default="env_cfg.max_episode_steps")
+    parser.add_argument('--color_by', default="env_cfg.max_episode_steps")
+    parser.add_argument('--rolling_window', type=int, default=None)
 
     args = parser.parse_args()
-
-    # experiment_path,
-    plot_experiment(args.experiment_path,
+    plot_experiments(args.experiments_path,
+                    args.algorithm_names,
+                    plot_values=args.plot_values,
+                    filter_by=args.filter_by,
+                    filter_value=args.filter_value,
                     x_axis=args.x_axis,
                     plot_type=args.plot_type,
-                    kind=args.kind,
-                    plot_data=args.plot_data,
                     main_groupby=args.main_groupby,
-                    groupby_clm=args.groupby_clm,
+                    groupby_column=args.groupby_column,
                     color_by=args.color_by,
-                    show_legend=(not args.no_legend),
-                    simple=args.simple,
-                    rolling_window=args.rolling_window,
-                    weights_cl=args.weights_cl,
-                    save_max_w=args.save_max_w,
-                    new_out_dir=(not args.same_dir),
-                    max_frames=args.max_frames,
-                    melt_data=args.melt_data,
-                    filter_by=args.filter_by,
-                    filter_value=args.filter_value)
+                    rolling_window=args.rolling_window)
