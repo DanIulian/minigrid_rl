@@ -5,6 +5,9 @@ from . import ppo_icm
 from . import ppo_prediction_error
 from . import ppo_episodic_curiosity
 from . import ppo_disagreement
+from . import ppo_icm_simple
+from . import ppo_ride
+from . import ppo_never_give_up
 
 AGENTS = {
     "PPORND": ppo_rnd.PPORND,
@@ -14,6 +17,9 @@ AGENTS = {
     "PPOPE": ppo_prediction_error.PPOPE,
     "PPOEpisodicCuriosity": ppo_episodic_curiosity.PPOEpisodicCuriosity,
     "PPODisagreement": ppo_disagreement.PPODisagreement,
+    "PPOIcmSimple": ppo_icm_simple.PPOIcmSimple,
+    "PPORide": ppo_ride.PPORide,
+    "PPONeverGiveUp": ppo_never_give_up.PPONeverGiveUp,
 }
 
 

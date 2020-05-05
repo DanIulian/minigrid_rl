@@ -36,6 +36,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         self.rewards_int = torch.zeros(*shape, device=self.device)
         self.advantages_int = torch.zeros(*shape, device=self.device)
         self.intrinsic_reward_fn = intrinsic_reward_fn
+        self.normadv = True
 
     def collect_experiences(self):
         """Collects rollouts and computes advantages. See base class for more info

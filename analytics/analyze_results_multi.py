@@ -30,14 +30,14 @@ def plot_experiment(experiment_paths: List[str], main_groupby = "main.env", x_ax
                     groupby_clm="run_name", kind="scatter",
                     show_legend=False, simple=True):
 
-    data, cfgs, df = get_experiment_files(experiment_path, files={"log.csv": "read_csv"})
+    data, cfgs, df = get_experiment_files(experiment_paths, files={"log.csv": "read_csv"})
 
     # df.boxplot(by="run_index", column="FPS", grid=0)
 
     # experiments_group = df.groupby("experiment_id", sort=False)
     experiments_group = df.groupby(main_groupby, sort=False)
 
-    save_path = os.path.join(experiment_path, "analysis")
+    save_path = os.path.join(experiment_paths, "analysis")
     if not os.path.isdir(save_path):
         os.mkdir(save_path)
 
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.complex:
-        plot_experiment(args.path, main_groupby="experiment_id", groupby_clm="run_id", kind="line", simple=True,
+        plot_experiment(args.experiment_paths, main_groupby="experiment_id", groupby_clm="run_id", kind="line", simple=True,
                         show_legend=False)
     else:
-        plot_experiment(args.path, show_legend=True, kind="scatter", simple=False)
+        plot_experiment(args.experiment_paths, show_legend=True, kind="scatter", simple=False)

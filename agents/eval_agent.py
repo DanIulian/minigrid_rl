@@ -3,7 +3,6 @@
 '''
 
 from gym_minigrid.wrappers import *
-from gym_minigrid.window import Window
 import torch
 import torch.nn
 
@@ -250,7 +249,11 @@ class EvalAgent(object):
         for i, img in enumerate(episode_obs):
             plt.imsave(f"{curr_ep_dir}/image_{i}.png", img, format='png')
 
-    def on_new_observation(self, unused_obs, unused_rewards, unused_dones, unused_infos):
+    def on_new_observation(self,
+                           unused_obs=None,
+                           unused_rewards=None,
+                           unused_dones=None,
+                           unused_infos=None):
 
         self._step_count += 1
 

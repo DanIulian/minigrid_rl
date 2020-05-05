@@ -7,6 +7,7 @@ import torch
 from agents.base_algo_v2 import BaseAlgov2
 from torch_rl.utils import ParallelEnv
 
+
 class PPO(BaseAlgov2):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""

@@ -3,13 +3,12 @@
     inspired from https://github.com/lcswillems/torch-rl
 """
 import numpy as np
-import os
 import torch
 
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
-from utils.utils import RunningMeanStd, RewardForwardFilter
+from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
 
@@ -35,6 +34,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         reshape_reward = kwargs.get("reshape_reward", None)
         eval_envs = kwargs.get("eval_envs", [])
 
+        self.icm_beta_coeff = getattr(cfg, "beta_coeff", 0.2)
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
         self.nminibatches = getattr(cfg, "nminibatches", 4)
@@ -307,18 +307,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
-        beta = 0.2  # loss factor for Forward and Dynamics Models
+        beta = self.icm_beta_coeff  # loss factor for Forward and Dynamics Models
 
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
         f, prev_frame_exps = self.augment_exp(exps)
-
-        # Save state
-        out_dir = self.out_dir
-        updates_cnt = self.updates_cnt
-        save_experience_batch = self.save_experience_batch
-        save = save_experience_batch > 0 and (updates_cnt + 1) % save_experience_batch == 0
-
         # ------------------------------------------------------------------------------------------
         if self.pre_fill_memories:
             prev_actions = prev_frame_exps.actions_onehot
@@ -342,6 +335,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
         prev_actions = prev_frame_exps.actions_onehot
         prev_memory = prev_frame_exps.agworld_mems
+
+        agworld_network.eval()
         for i in range(num_frames_per_proc):
             obs = f.obs_image[i]
             masks = f.mask[i]
@@ -358,7 +353,8 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                 prev_actions = actions
                 prev_memory = next_state[i]
 
-        # TODO fix the last intrinsic reward value as it is pred - 0
+        agworld_network.train()
+
         dst_intrinsic_r = (pred_next_state[1:] - next_state[1:]).detach().pow(2).sum(2)
 
         # --Normalize intrinsic reward
@@ -369,14 +365,10 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
 
         self.predictor_rms.update(int_rff.view(-1))  # running mean statisics
-        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
-        #if save:
-        #    f.dst_intrinsic = dst_intrinsic_r.clone()
-        #    torch.save(f, f"{out_dir}/f_{updates_cnt}")
-        #    delattr(f, "dst_intrinsic")
-
+        # -- Log info about intrinisc rewards distribution per action type
+        self.log_intrinsic_reward_info(dst_intrinsic_r, f.action)
 
         # ------------------------------------------------------------------------------------------
         # -- Optimize ICM
@@ -505,7 +497,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
 
             #log some shit
-
             log_act_loss.append(act_batch_loss.item())
             log_state_loss.append(state_batch_loss.item())
 
@@ -531,9 +522,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
         self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
 
-        self.aux_logs["mean_intrinsic_rewards"] = np.mean(dst_intrinsic_r.cpu().numpy())
-        self.aux_logs["var_intrinsic_rewards"] = np.var(dst_intrinsic_r.cpu().numpy())
-
         return dst_intrinsic_r
 
     def add_extra_experience(self, exps: DictList):
@@ -557,3 +545,51 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             exps.states = preprocess_images(full_states, device=self.device)
 
         exps.obs_image = exps.obs.image
+
+    def log_intrinsic_reward_info(self, intrinsic_rewards, actions):
+
+        self.aux_logs["mean_intrinsic_rewards"] = np.mean(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["min_intrinsic_rewards"] = np.min(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["max_intrinsic_rewards"] = np.max(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["var_intrinsic_rewards"] = np.var(intrinsic_rewards.cpu().numpy())
+
+        # -- MOVE FORWARD INTRINSIC REWARDS
+        int_r = intrinsic_rewards[actions == ActionNames.MOVE_FORWARD].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtyp=np.float32)
+
+        self.aux_logs["move_forward_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["move_forward_var_int_r"] = np.var(int_r)
+        self.aux_logs["move_forward_max_int_r"] = np.max(int_r)
+        self.aux_logs["move_forward_min_int_r"] = np.min(int_r)
+
+        # -- TURNING INTRINSIC REWARDS
+        int_r = intrinsic_rewards[(actions == ActionNames.TURN_LEFT) | (actions == ActionNames.TURN_RIGHT)].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtyp=np.float32)
+
+        self.aux_logs["turn_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["turn_var_int_r"] = np.var(int_r)
+        self.aux_logs["turn_max_int_r"] = np.max(int_r)
+        self.aux_logs["turn_min_int_r"] = np.min(int_r)
+
+        # -- OBJECT PICKING UP / DROPPING INTRINSIC REWARDS
+        int_r = intrinsic_rewards[(actions == ActionNames.PICK_UP) | (actions == ActionNames.DROP) ].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtyp=np.float32)
+
+        self.aux_logs["obj_interactions_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["obj_interactions_var_int_r"] = np.var(int_r)
+        self.aux_logs["obj_interactions_max_int_r"] = np.max(int_r)
+        self.aux_logs["obj_interactions_min_int_r"] = np.min(int_r)
+
+        # -- OBJECT TOGGLE (OPEN DOORS, BREAKING BOXES)
+        int_r = intrinsic_rewards[actions == ActionNames.INTERACT].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtyp=np.float32)
+
+        self.aux_logs["obj_toggle_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)
+        self.aux_logs["obj_toggle_max_int_r"] = np.max(int_r)
+        self.aux_logs["obj_toggle_min_int_r"] = np.min(int_r)
+

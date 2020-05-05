@@ -56,6 +56,15 @@ class RewardForwardFilter(object):
         self.rewems = None
 
 
+class ActionNames(object):
+    TURN_LEFT = 0
+    TURN_RIGHT = 1
+    MOVE_FORWARD = 2
+    PICK_UP = 3
+    DROP = 4
+    INTERACT = 5
+
+
 if __name__ == "__main__":
     rnm = RunningMeanStd()
     rnm.update(torch.FloatTensor([2]))

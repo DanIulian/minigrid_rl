@@ -4,18 +4,15 @@
 """
 import numpy as np
 import torch
-import torch.nn
-import torch.nn.functional as F
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
-from utils.utils import RunningMeanStd, RewardForwardFilter
+from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
-from agents.eval_agent import EvalAgent
 
 
-class PPODisagreement(TwoValueHeadsBaseGeneral):
+class PPOIcmSimple(TwoValueHeadsBaseGeneral):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
@@ -25,8 +22,8 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         gae_lambda = getattr(cfg, "gae_lambda", 0.95)
         entropy_coef = getattr(cfg, "entropy_coef", 0.01)
         value_loss_coef = getattr(cfg, "value_loss_coef", 0.5)
-        max_grad_norm = getattr(cfg, "max_grad_norm", 0.5)
-        recurrence = getattr(cfg, "recurrence", 4)
+        max_grad_norm = getattr(cfg, "max_grad_norm", 40.0)
+        recurrence = getattr(cfg, "recurrence", 1)
         clip_eps = getattr(cfg, "clip_eps", 0.)
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
@@ -35,37 +32,22 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
-        self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
-        self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
-        self.nminibatches = getattr(cfg, "nminibatches", 4)
+        self.icm_beta_coeff = getattr(cfg, "beta_coeff", 0.2)
         self.out_dir = getattr(cfg, "out_dir", None)
-        self.pre_fill_memories = getattr(cfg, "pre_fill_memories", 1)
 
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 5)
-
-        fe_type = acmodel.feature_extractor.network_type
-        if fe_type == "random":
-            intrinsic_reward_fn = self.calculate_int_reward_rand
-        elif fe_type == "inverse_dynamics":
-            intrinsic_reward_fn = self.calculate_int_reward_inv
-        else:
-            raise ValueError("No such intrinsic reward function")
 
         envs = ParallelEnv(envs)
         super().__init__(envs, acmodel, num_frames_per_proc, discount,
                          gae_lambda, entropy_coef, value_loss_coef,
                          max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                         exp_used_pred, intrinsic_reward_fn=intrinsic_reward_fn)
+                         exp_used_pred, intrinsic_reward_fn=self.calculate_intrinsic_reward)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
         self.batch_size = batch_size
         self.int_coeff = cfg.int_coeff
         self.ext_coeff = cfg.ext_coeff
-
-        # Intrinsic reward parameters
-        self.dyn_batch_size = getattr(cfg, "disagreement_batch_size", 64)
-        self.dyn_nr_epochs = getattr(cfg, "disagreement_nr_epochs", 3)
 
         assert self.batch_size % self.recurrence == 0
 
@@ -86,17 +68,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # -- Previous batch of experiences last frame
         self.prev_frame_exps = None
 
-        # Eval envs
-        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
-        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
-        self.eval_agent = EvalAgent(envs,
-                                    acmodel.policy_model,
-                                    None,
-                                    self.preprocess_obss,
-                                    self.out_dir,
-                                    eval_agent_nr_steps,
-                                    eval_nr_runs)
-
+        # -- Init evaluator envs
 
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
@@ -113,30 +85,19 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.optimizer_policy = getattr(torch.optim, optimizer)(
             self.acmodel.policy_model.parameters(), **optimizer_args)
 
-        self.optimizer_fe = getattr(torch.optim, optimizer)(
-            self.acmodel.feature_extractor.parameters(), **optimizer_args
-        )
+        self.optimizer_agworld = getattr(torch.optim, optimizer)(
+            self.acmodel.curiosity_model.parameters(), **optimizer_args)
 
-        self.optimizer_dyn = [getattr(torch.optim, optimizer)(
-            dyn_model.parameters(), **optimizer_args)
-            for dyn_model in self.acmodel.dyn_list]
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
-            self.optimizer_fe.load_state_dict(agent_data["optimizer_feature_extractor"])
-
-            for dyn_opt, dyn_opt_state in zip(self.optimizer_dyn, agent_data["optimizer_dyn_list"]):
-                dyn_opt.load_state_dict(dyn_opt_state)
-
+            self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
     def update_parameters(self):
-
         # Collect experiences
-        exps, logs = self.collect_experiences()
 
-        # Eval progress
-        self.eval_agent.on_new_observation() # this happens every 2048 frames
+        exps, logs = self.collect_experiences()
 
         # Initialize log values
         log_entropies = []
@@ -280,7 +241,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.updates_cnt += 1
         return logs
 
-    def _get_batches_starting_indexes(self, batch_size=None, recurrence=None, padding=0):
+    def _get_batches_starting_indexes(self, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
 
@@ -300,9 +261,6 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         if recurrence is None:
             recurrence = self.recurrence
 
-        if batch_size is None:
-            batch_size = self.batch_size
-
         # Consider Num frames list ordered P * T
         if padding == 0:
             indexes = np.arange(0, self.num_frames, recurrence)
@@ -319,7 +277,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # Shift starting indexes by recurrence//2 half the time
         self.batch_num += 1
 
-        num_indexes = batch_size // recurrence
+        num_indexes = self.batch_size // recurrence
         batches_starting_indexes = [
             indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)
         ]
@@ -329,58 +287,53 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
     def get_save_data(self):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
-            "optimizer_fe": self.optimizer_fe.state_dict(),
-            "optimizer_dyn_list": [dyn_opt.state_dict() for dyn_opt in self.optimizer_dyn],
+            "optimizer_agworld": self.optimizer_agworld.state_dict(),
             "predictor_rms": self.predictor_rms,
         })
 
-    def calculate_int_reward_rand(self, exps: DictList, dst_intrinsic_r: torch.FloatTensor):
+    def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
 
+        # ------------------------------------------------------------------------------------------
         # Run worlds models & generate memories
 
-        feature_ext_network = self.acmodel.feature_extractor
-        dyn_list = self.acmodel.dyn_list
+        agworld_network = self.acmodel.curiosity_model
 
         num_procs = self.num_procs
         num_frames_per_proc = self.num_frames_per_proc
         device = self.device
-        batch_size = self.dyn_batch_size
-        nr_epochs = self.dyn_nr_epochs
-
+        beta = self.icm_beta_coeff # loss factor for Forward and Dynamics Models
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
-        f, prev_frame_exps = self.augment_exp(exps, feature_ext_network)
+        f, prev_frame_exps = self.augment_exp(exps)
 
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards
 
-        pred_next_state = torch.zeros(num_frames_per_proc + 1,
-                                      num_procs,
-                                      len(dyn_list),
-                                      feature_ext_network.embedding_size,
-                                      device=device)
+        pred_next_state = torch.zeros(num_frames_per_proc + 1, num_procs,
+                                      agworld_network.embedding_size, device=device)
+        embedding_states = torch.zeros(num_frames_per_proc + 1, num_procs,
+                                      agworld_network.embedding_size, device=device)
 
-        #feature_ext_network.eval()
-        map(lambda x: x.eval(), dyn_list)
+        prev_actions = prev_frame_exps.actions_onehot
+
+        agworld_network.eval()
         for i in range(num_frames_per_proc):
-            obs = f.obs_image[i]
+            cur_obs = f.obs_image[i]
             actions = f.actions_onehot[i]
 
             #Do one agent-environment interaction
             with torch.no_grad():
-                state_embedding = feature_ext_network(obs)
-                f.agworld_embs[i] = state_embedding.detach()
+                _, embedding_states[i] = agworld_network(cur_obs)
+                pred_next_state[i + 1] = agworld_network.forward_state(embedding_states[i], actions)
 
-                for j, dyn_model in enumerate(dyn_list):
-                    pred_next_state[i, :, j, :] = dyn_model(state_embedding, actions)
-        map(lambda x: x.train(), dyn_list)
-        #feature_ext_network.train()
-
-        dst_intrinsic_r = pred_next_state.var(dim=2).mean(dim=-1).detach()
+        agworld_network.train()
+        dst_intrinsic_r = (pred_next_state[1:] - embedding_states[1:]).detach().pow(2).sum(2)
+        dst_intrinsic_r[-1] = dst_intrinsic_r[:-1].mean()  # we don't have access to last next state :(
 
         # --Normalize intrinsic reward
-        #self.predictor_rff.reset()
+        #self.predictor_rff.reset() # do you have to rest it every time ???
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
+
         for i in reversed(range(self.num_frames_per_proc)):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
 
@@ -391,73 +344,118 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.log_intrinsic_reward_info(dst_intrinsic_r, f.action)
 
         # ------------------------------------------------------------------------------------------
-        # -- Optimize Dynamics
-        optimizer_dyn = self.optimizer_dyn
+        # -- Optimize ICM
+        optimizer_agworld = self.optimizer_agworld
         max_grad_norm = self.max_grad_norm
 
         # _________ for all tensors below, T x P -> P x T -> P * T _______________________
         f = self.flip_back_experience(f)
+        # ------------------------------------------------------------------------------------------
 
-        self.train_dynamic_models(f.agworld_embs,
-                                  f.actions_onehot,
-                                  batch_size,
-                                  nr_epochs,
-                                  max_grad_norm)
-
-        return dst_intrinsic_r
-
-    def train_dynamic_models(self,
-                             current_embeddings: torch.Tensor,
-                             actions: torch.Tensor,
-                             batch_size: int,
-                             nr_epochs: int,
-                             max_grad_norm: float):
-
-        dyn_list = self.acmodel.dyn_list
-        dyn_optimizer = self.optimizer_dyn
+        loss_m_state = torch.nn.MSELoss()
+        loss_m_act = torch.nn.CrossEntropyLoss()
 
         log_state_loss = []
-        log_grad_dyn_norm = []
+        log_state_loss_same = []
+        log_state_loss_diffs = []
 
-        for _ in range(nr_epochs):
-            epoch_loss = 0.0
-            batch_idx = self._get_batches_starting_indexes(batch_size=batch_size,
-                                                           recurrence=1,
-                                                           padding=1)
-            # Randomly select the model to train on every batch
-            dyn_idx = np.random.randint(0, len(dyn_list), len(batch_idx))
-            for i, inds in enumerate(batch_idx):
+        log_act_loss = []
+        log_act_loss_same = []
+        log_act_loss_diffs = []
 
-                emb = current_embeddings[inds].detach()
-                next_emb = current_embeddings[inds + 1].detach()
-                act = actions[inds]
+        log_grad_agworld_norm = []
 
-                selected_model = dyn_idx[i]
+        for epoch_no in range(self.epochs):
+            for inds in self._get_batches_starting_indexes(recurrence=1, padding=1):
 
-                dyn_optimizer[selected_model].zero_grad()
+                obs = f.obs_image[inds].detach()
+                next_obs = f.obs_image[inds + 1].detach()
+                crt_actions = f.action[inds].long().detach()
+                crt_actions_one = f.actions_onehot[inds].detach()
 
-                predicted_next_state = dyn_list[selected_model](emb, act)
+                # take masks and convert them to 1D tensor for indexing
+                # use next masks because done gives you the new game obs
+                next_mask = f.mask[inds + 1].long().detach()
+                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
 
-                loss = F.mse_loss(predicted_next_state, next_emb, reduction="mean")
-                epoch_loss += loss.item()
+                _, crt_state_embedding = agworld_network(obs)
+                _, next_state_embedding = agworld_network(next_obs)
 
-                loss.backward()
+                pred_act = agworld_network.forward_action(crt_state_embedding, next_state_embedding)
+                pred_state = agworld_network.forward_state(crt_state_embedding, crt_actions_one)
 
-                grad_dyn_norm = sum(
-                    p.grad.data.norm(2).item() ** 2 for p in dyn_list[selected_model].parameters()
+                act_batch_loss = loss_m_act(pred_act, crt_actions)
+                state_batch_loss = loss_m_state(pred_state, next_state_embedding)
+
+                log_act_loss.append(act_batch_loss.item())
+                log_state_loss.append(state_batch_loss.item())
+                # ======================================================================================
+                # Compute state & action loss for same states and different states
+
+                # if all episodes ends at once, can't compute same/diff losses
+                if next_mask.sum() == 0:
+                    continue
+
+                next_mask_as_bool = next_mask.to(torch.bool)
+                same = (obs[next_mask_as_bool] == next_obs[next_mask_as_bool]).all(1).all(1).all(1)
+
+                s_pred_act = pred_act[next_mask_as_bool]
+                s_crt_act = crt_actions[next_mask_as_bool]
+
+                s_pred_state = pred_state[next_mask_as_bool]
+                s_crt_state = (next_state_embedding.detach())[next_mask_as_bool]
+
+                # if all are same/diff take care to empty tensors
+                if same.sum() == same.shape[0]:
+                    act_batch_loss_same = loss_m_act(s_pred_act[same], s_crt_act[same])
+                    state_batch_loss_same = loss_m_state(s_pred_state[same], s_crt_state[same])
+
+                elif same.sum() == 0:
+                    act_batch_loss_diff = loss_m_act(s_pred_act[~same], s_crt_act[~same])
+                    state_batch_loss_diffs = loss_m_state(s_pred_state[~same], s_crt_state[~same])
+
+                else:
+                    act_batch_loss_same = loss_m_act(s_pred_act[same], s_crt_act[same])
+                    act_batch_loss_diff = loss_m_act(s_pred_act[~same], s_crt_act[~same])
+
+                    state_batch_loss_same = loss_m_state(s_pred_state[same], s_crt_state[same])
+                    state_batch_loss_diffs = loss_m_state(s_pred_state[~same], s_crt_state[~same])
+
+                log_state_loss_same.append(state_batch_loss_same.item())
+                log_state_loss_diffs.append(state_batch_loss_diffs.item())
+
+                log_act_loss_same.append(act_batch_loss_same.item())
+                log_act_loss_diffs.append(act_batch_loss_diff.item())
+                # =======================================================================================
+
+                # Do backpropagation and optimization steps
+
+                total_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
+
+                optimizer_agworld.zero_grad()
+
+                total_loss.backward()
+                grad_agworld_norm = sum(
+                    p.grad.data.norm(2).item() ** 2 for p in agworld_network.parameters()
                     if p.grad is not None
                 ) ** 0.5
-                log_grad_dyn_norm.append(grad_dyn_norm)
-
-                torch.nn.utils.clip_grad_norm_(dyn_list[selected_model].parameters(), max_grad_norm)
-                dyn_optimizer[selected_model].step()
-
-            log_state_loss.append(epoch_loss / len(batch_idx))
+                log_grad_agworld_norm.append(grad_agworld_norm)
+                torch.nn.utils.clip_grad_norm_(agworld_network.parameters(), max_grad_norm)
+                optimizer_agworld.step()
 
         # ------------------------------------------------------------------------------------------
         # Log some values
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
-        self.aux_logs['grad_norm_dyn'] = np.mean(log_grad_dyn_norm)
+        self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
+        self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
+
+        self.aux_logs['next_state_loss_same'] = np.mean(log_state_loss_same)
+        self.aux_logs['next_state_loss_diffs'] = np.mean(log_state_loss_diffs)
+
+        self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
+        self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
+
+        return dst_intrinsic_r
 
     def add_extra_experience(self, exps: DictList):
         # Process
@@ -527,5 +525,4 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)
         self.aux_logs["obj_toggle_max_int_r"] = np.max(int_r)
         self.aux_logs["obj_toggle_min_int_r"] = np.min(int_r)
-
 

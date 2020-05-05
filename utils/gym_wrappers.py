@@ -5,16 +5,11 @@ import gym
 import numpy as np
 from copy import deepcopy
 from gym import Wrapper
-from optparse import OptionParser
-import time
-import math
 import collections
-from gym_minigrid.minigrid import OBJECT_TO_IDX, COLOR_TO_IDX
 import cv2
 from gym_minigrid.wrappers import RGBImgObsWrapper, FullyObsWrapper, RGBImgPartialObsWrapper, \
     StateBonus, ActionBonus
 import torch
-from gym import error, spaces, utils
 
 try:
     import gym_minigrid
@@ -96,6 +91,89 @@ def occupancy_stats(env):
 
 def tensor_out(env):
     return TensorOut(env)
+
+
+def state_visitation_pos_direction(env):
+    return StateVisitationPositionDirection(env)
+
+
+def state_visitation_hash(env):
+    return StateVisitationHash(env)
+
+
+class StateVisitationPositionDirection(Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.unique_states = {}
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+
+        # Compute state visitation
+        self._hash_state(observation)
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        self.unique_states = {}
+
+        observation = self.env.reset(**kwargs)
+        self._hash_state(observation)
+
+        return observation
+
+    def _hash_state(self, observation):
+        env = self.env.unwrapped
+
+        # Count unique states
+        if not env.carrying:
+            carrying_type = None
+            carrying_color = None
+        else:
+            carrying_type = env.carrying.type
+            carrying_color = env.carrying.color
+
+        tup = (tuple(env.agent_pos), env.agent_dir, carrying_type, carrying_color)
+
+        if tup not in self.unique_states:
+            self.unique_states[tup] = 0
+        self.unique_states[tup] += 1
+
+        observation['state_visitation'] = self.unique_states[tup]
+
+
+class StateVisitationHash(Wrapper):
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.unique_states = {}
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+
+        # Compute state visitation
+        self._hash_state(observation)
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        self.unique_states = {}
+
+        observation = self.env.reset(**kwargs)
+        self._hash_state(observation)
+
+        return observation
+
+    def _hash_state(self, observation):
+
+        state = hash(observation['image'].tostring())
+
+        if state not in self.unique_states:
+            self.unique_states[state] = 0
+        self.unique_states[state] += 1
+
+        observation['state_visitation'] = self.unique_states[state]
 
 
 class FullyObsWrapperDirDiff(FullyObsWrapper):
@@ -1012,85 +1090,119 @@ class ActionBonus(gym.core.Wrapper):
         self.counts = {}
         return self.env.reset(**kwargs)
 
+from gym_minigrid.wrappers import *
+from gym_minigrid.window import Window
+import argparse
 
 def main():
-    parser = OptionParser()
-    parser.add_option(
-        "-e",
-        "--env-name",
-        dest="env_name",
-        help="gym environment to load",
-        default='MiniGrid-DoorKey-8x8-v0'
-    )
-    (options, args) = parser.parse_args()
 
-    # Load the gym environment
-    env = gym.make(options.env_name)
-    env = RecordPosition(env)
-    env = GetImportantInteractions(env)
+    def _redraw(img):
+        if not args.agent_view:
+            img = env.render('rgb_array', tile_size=args.tile_size)
 
-    def resetEnv():
-        env.reset()
+        window.show_img(img)
+
+    def _reset():
+        if args.seed != -1:
+            env.seed(args.seed)
+
+        obs = env.reset()
+
         if hasattr(env, 'mission'):
             print('Mission: %s' % env.mission)
+            window.set_caption(env.mission)
 
-    resetEnv()
+        _redraw(obs)
 
-    # Create a window to render into
-    renderer = env.render('human')
-
-    def keyDownCb(keyName):
-        if keyName == 'BACKSPACE':
-            resetEnv()
-            return
-
-        if keyName == 'ESCAPE':
-            import sys
-            sys.exit(0)
-
-        action = 0
-
-        if keyName == 'LEFT':
-            action = env.unwrapped.actions.left
-        elif keyName == 'RIGHT':
-            action = env.unwrapped.actions.right
-        elif keyName == 'UP':
-            action = env.unwrapped.actions.forward
-
-        elif keyName == 'SPACE':
-            action = env.unwrapped.actions.toggle
-        elif keyName == 'P':
-            action = env.unwrapped.actions.pickup
-        elif keyName == 'D':
-            action = env.unwrapped.actions.drop
-
-        elif keyName == 'RETURN':
-            action = env.unwrapped.actions.done
-
-        else:
-            print("unknown key %s" % keyName)
-            return
-
+    def _step(action):
         obs, reward, done, info = env.step(action)
-        print(env.doors)
-        print(env.objects)
-        print(env.unwrapped.agent_pos)
-
-        print('step=%s, reward=%.2f' % (env.unwrapped.step_count, reward))
+        print('step=%s, reward=%.2f' % (env.step_count, reward))
 
         if done:
             print('done!')
-            resetEnv()
+            _reset()
+        else:
+            _redraw(obs)
 
-    renderer.window.setKeyDownCb(keyDownCb)
+        print("State visitation {}".format(obs['state_visitation']))
 
-    while True:
-        env.render('human')
-        time.sleep(0.01)
+    def key_handler(event):
+        print('pressed', event.key)
 
-        # If the window was closed
-        if renderer.window == None:
-            break
+        if event.key == 'escape':
+            window.close()
+            return
+
+        if event.key == 'backspace':
+            _reset()
+            return
+
+        if event.key == 'left':
+            _step(env.actions.left)
+            return
+        if event.key == 'right':
+            _step(env.actions.right)
+            return
+        if event.key == 'up':
+            _step(env.actions.forward)
+            return
+
+        # Spacebar
+        if event.key == ' ':
+            _step(env.actions.toggle)
+            return
+        if event.key == 'p':
+            _step(env.actions.pickup)
+            return
+        if event.key == 'o':
+            _step(env.actions.drop)
+            return
+
+        if event.key == 'enter':
+            _step(env.actions.done)
+            return
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--env",
+        help="gym environment to load",
+        default='MiniGrid-MultiRoom-N6-v0'
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="random seed to generate the environment with",
+        default=-1
+    )
+    parser.add_argument(
+        "--tile_size",
+        type=int,
+        help="size at which to render tiles",
+        default=32
+    )
+    parser.add_argument(
+        '--agent_view',
+        default=False,
+        help="draw the agent sees (partially observable view)",
+        action='store_true'
+    )
+
+    args = parser.parse_args()
+
+    env = gym.make(args.env)
+    env = StateVisitationHash(env)
+
+    if args.agent_view:
+        env = RGBImgPartialObsWrapper(env)
+        env = ImgObsWrapper(env)
+
+    window = Window('gym_minigrid - ' + args.env)
+    window.reg_key_handler(key_handler)
+
+    _reset()
+
+    # Blocking event loop
+    window.show(block=True)
 
 
 if __name__ == "__main__":

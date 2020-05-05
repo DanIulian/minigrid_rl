@@ -5,6 +5,7 @@ from . import model_icm_like
 from . import model_prediction_error
 from . import model_episodic_curiosity
 from . import model_disagreement
+from . import model_icm_simple
 
 MODELS = {
     "RNDModel": model_rnd_like.RNDModels,
@@ -14,6 +15,7 @@ MODELS = {
     "PEModel": model_prediction_error.PEModel,
     "EpisodicCuriosityModel": model_episodic_curiosity.EpisodicCuriosityModel,
     "DisagreementModel": model_disagreement.DisagreementModel,
+    "ICMSimpleModel": model_icm_simple.ICMSimpleModel,
 }
 
 

@@ -107,7 +107,6 @@ class RNetwork(nn.Module):
         else:
             self.forward_similarity = self._forward_similarity_complex
 
-
         self._embedding_size = getattr(cfg, "r_net_embedding_size", 512) # embedding size after CNN processing
         k_sizes = getattr(cfg, "r_net_k_sizes", [2, 2, 2])  # kernel size for each layer
         s_sizes = getattr(cfg, "r_net_s_sizes", [1, 1, 1])  # stride size for each layer
