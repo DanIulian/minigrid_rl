@@ -119,7 +119,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
         self.optimizer_dyn = [getattr(torch.optim, optimizer)(
             dyn_model.parameters(), **optimizer_args)
-            for dyn_model in self.acmodel.dyn_list]
+            for dyn_model in self.module.dyn_list]
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
@@ -167,7 +167,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
                 # Initialize memory
 
-                if self.acmodel.recurrent:
+                if self.is_recurrent:
                     memory = exps.memory[inds]
 
                 for i in range(self.recurrence):
@@ -176,8 +176,8 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
                     sb = exps[inds + i]
                     # Compute loss
 
-                    if self.acmodel.recurrent:
-                        dist, vvalue, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
+                    if self.is_recurrent:
+                        dist, vvalue, memory = self.acmodelpolicy_model(sb.obs, memory * sb.mask)
                     else:
                         dist, vvalue = self.acmodel.policy_model(sb.obs)
 
@@ -220,7 +220,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
                     # Update memories for next epoch
 
-                    if self.acmodel.recurrent and i < self.recurrence - 1:
+                    if self.is_recurrent and i < self.recurrence - 1:
                         exps.memory[inds + i + 1] = memory.detach()
 
                 # Update batch values

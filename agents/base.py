@@ -71,6 +71,7 @@ class BaseAlgo(ABC):
         self.preprocess_obss = preprocess_obss or default_preprocess_obss
         self.reshape_reward = reshape_reward
 
+        self.is_recurrent = self.acmodel.recurrent
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.acmodel.train()
 
@@ -84,7 +85,7 @@ class BaseAlgo(ABC):
         self.num_frames = self.num_frames_per_proc * self.num_procs
 
         # Control parameters
-        assert self.acmodel.recurrent or self.recurrence == 1
+        assert self.is_recurrent or self.recurrence == 1
         assert self.num_frames_per_proc % self.recurrence == 0
 
         # Initialize experience values
@@ -106,7 +107,7 @@ class BaseAlgo(ABC):
         #Initialize experience values
         self.obs = self.env.reset()
         self.obss = [None]*(shape[0])
-        if self.acmodel.recurrent:
+        if self.is_recurrent:
             self.memory = torch.zeros(shape[1], self.acmodel.memory_size, device=self.device)
             self.memories = torch.zeros(*shape, self.acmodel.memory_size, device=self.device)
         self.mask = torch.ones(shape[1], device=self.device)
@@ -159,7 +160,7 @@ class BaseAlgo(ABC):
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
             with torch.no_grad():
-                if self.acmodel.recurrent:
+                if self.is_recurrent:
                     dist, value, memory = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
                 else:
                     dist, value = self.acmodel(preprocessed_obs)
@@ -181,7 +182,7 @@ class BaseAlgo(ABC):
         # Make one step further to get the next value approximation
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
-            if self.acmodel.recurrent:
+            if self.is_recurrent:
                 _, next_value, _ = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
             else:
                 _, next_value = self.acmodel(preprocessed_obs)
@@ -222,7 +223,7 @@ class BaseAlgo(ABC):
         # Update experiences values
         self.obss[curr_step] = self.obs
         self.obs = curr_obs  # New observations
-        if self.acmodel.recurrent:
+        if self.is_recurrent:
             self.memories[curr_step] = self.memory
             self.memory = curr_memory
         self.masks[curr_step] = self.mask
@@ -279,7 +280,7 @@ class BaseAlgo(ABC):
         exps.obs = [self.obss[i][j]
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
-        if self.acmodel.recurrent:
+        if self.is_recurrent:
             # T x P x D -> P x T x D -> (P * T) x D
             exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
             # T x P -> P x T -> (P * T) x 1

@@ -336,8 +336,8 @@ def run(full_args: Namespace, return_models: bool = False):
         # Print Model info
         logger.info("{}\n".format(model))
 
-    if torch.cuda.is_available():
-        model.cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     logger.info("CUDA available: {}\n".format(torch.cuda.is_available()))
 
     # ==============================================================================================

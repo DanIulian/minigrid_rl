@@ -128,7 +128,7 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
 
                 # Initialize memory
 
-                if self.acmodel.recurrent:
+                if self.is_recurrent:
                     memory = exps.memory[inds]
 
                 for i in range(self.recurrence):
@@ -137,7 +137,7 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
                     sb = exps[inds + i]
                     # Compute loss
 
-                    if self.acmodel.recurrent:
+                    if self.is_recurrent:
                         dist, vvalue, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
                     else:
                         dist, vvalue = self.acmodel.policy_model(sb.obs)
@@ -181,7 +181,7 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
 
                     # Update memories for next epoch
 
-                    if self.acmodel.recurrent and i < self.recurrence - 1:
+                    if self.is_recurrent and i < self.recurrence - 1:
                         exps.memory[inds + i + 1] = memory.detach()
 
                 # Update batch values
@@ -304,7 +304,7 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
         beta = self.icm_beta_coeff # loss factor for Forward and Dynamics Models
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
-        f, prev_frame_exps = self.augment_exp(exps)
+        f, prev_frame_exps = self.augment_exp(exps, agworld_network)
 
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards

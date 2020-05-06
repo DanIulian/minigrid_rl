@@ -29,6 +29,11 @@ class EpisodicMemory(object):
                  observation_shape,
                  observation_compare_fn,
                  device,
+                 nr_neighbours=10,
+                 eps=0.001,
+                 cluster_distance=0.008,
+                 kernel_eps=0.0001,
+                 max_similarity=8,
                  replacement='fifo',
                  capacity=200):
         """Creates an episodic memory.
@@ -37,6 +42,11 @@ class EpisodicMemory(object):
         observation_compare_fn: Function used to measure similarity between
             two observations. This function returns the estimated probability that
             two observations are similar.
+        nr_neighbors: Number of nearest neighbours when computing pseudo-counts
+        eps: Pseudo-counts constant
+        cluster_distance: cluster distance when computing kernel simiarity
+        kernel_eps: kernel constant
+        max_similarity: maximum similarity
         replacement: String to select the behavior when a sample is added
             to the memory when this one is full.
             Can be one of: 'fifo', 'random'.
@@ -49,7 +59,12 @@ class EpisodicMemory(object):
         """
         self._capacity = capacity
         self._replacement = replacement
-        self._device =device
+        self._device = device
+        self._nr_neighbours = nr_neighbours
+        self._eps = eps
+        self._cluster_distance = cluster_distance
+        self._kernel_eps = kernel_eps
+        self._max_similarity = max_similarity
 
         if self._replacement not in ['fifo', 'random']:
             raise ValueError('Invalid replacement scheme')
@@ -120,27 +135,41 @@ class EpisodicMemory(object):
         self._memory_age[index] = self._count
         self._count += 1
 
-    def similarity(self, observation):
-        """Similarity between the input observation and the ones from the memory.
+    def compute_intrinsic_reward(self, observation):
+        """Compute intrinsic reward as similarity between the observation and the
+           K-nearest neighbours in memory
         Args:
-          observation: The input observation.
+          observation: The input observation embedding after passing it through ICM
         Returns:
-          A numpy array of similarities corresponding to the similarity between
-          the input and each of the element in the memory.
+          intrinsic_reward
         """
-        # Make the observation batched with batch_size = self._size before
-        # computing the similarities.
-        # TODO(damienv): could we avoid replicating the observation ?
-        # (with some form of broadcasting).
-        size = len(self)
-        observation = observation.unsqueeze(0).repeat(size, 1)
-        similarities = self._observation_compare_fn(
-            observation,
-            torch.tensor(self._obs_memory[:size], dtype=torch.float , device=self._device))
 
-        with torch.no_grad():
-            rez = F.softmax(similarities, dim=1)
-        return rez
+        size = len(self)
+
+        # -- Compute kNN by computing Euclidian distances between the observation and
+        # the memory content
+        observation = observation.unsqueeze(0).repeat(size, 1)
+        mem = torch.tensor(self._obs_memory[:size], dtype=torch.float, device=self._device)
+        dist = torch.norm(observation - mem, dim=1)
+        kNN_values, kNN_idx = torch.topk(dist, self._nr_neighbours, dim=0)
+
+        knn_dist = kNN_values.pow(2)
+
+        # TODO update moving average
+        dm = compute_moving_average(knn_dist)
+        # -- Compute distances and apply the kernel computing the pseudo counts
+
+        dist = knn_dist / dm
+        dist = torch.max(dist - self._cluster_distance, torch.zeros_like(dist))
+
+        tensor_eps = torch.full(dist.shape, self._kernel_eps, dtype=torch.float, device=self._device)
+        kernel_values = torch.exp(torch.log(tensor_eps) - torch.log(tensor_eps + dist))
+
+        sim = (kernel_values.sum().sqrt()).item() + self._eps
+        if sim > self._max_similarity:
+            return 0
+        return 1 / sim
+
 
 
 def similarity_to_memory(observation,

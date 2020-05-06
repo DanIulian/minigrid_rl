@@ -32,6 +32,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
+        self.num_minibatch = getattr(cfg, "num_minibatch", 8)
         self.icm_beta_coeff = getattr(cfg, "beta_coeff", 0.2)
         self.out_dir = getattr(cfg, "out_dir", None)
 
@@ -115,7 +116,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         for epoch_no in range(self.epochs):
 
             # Loop for Policy
-            for inds in self._get_batches_starting_indexes():
+            for inds in self._get_batches_start_idx_v2():
                 # Initialize batch values
 
                 batch_entropy = 0
@@ -128,7 +129,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
 
                 # Initialize memory
 
-                if self.acmodel.recurrent:
+                if self.is_recurrent:
                     memory = exps.memory[inds]
 
                 for i in range(self.recurrence):
@@ -137,7 +138,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
                     sb = exps[inds + i]
                     # Compute loss
 
-                    if self.acmodel.recurrent:
+                    if self.is_recurrent:
                         dist, vvalue, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
                     else:
                         dist, vvalue = self.acmodel.policy_model(sb.obs)
@@ -181,7 +182,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
 
                     # Update memories for next epoch
 
-                    if self.acmodel.recurrent and i < self.recurrence - 1:
+                    if self.is_recurrent and i < self.recurrence - 1:
                         exps.memory[inds + i + 1] = memory.detach()
 
                 # Update batch values
@@ -284,6 +285,50 @@ class PPORide(TwoValueHeadsBaseGeneral):
 
         return batches_starting_indexes
 
+    def _get_batches_start_idx_v2(self, recurrence=None, padding=0):
+        """Gives, for each batch, the indexes of the observations given to
+        the model and the experiences used to compute the loss at first.
+
+        Returns
+        -------
+        batches_starting_indexes : list of list of int
+            the indexes of the experiences to be used at first for each batch
+
+        """
+        num_frames_per_proc = self.num_frames_per_proc
+        num_procs = self.num_procs
+        num_minibatch = self.num_minibatch
+
+        if recurrence is None:
+            recurrence = self.recurrence
+
+        #  --Matrix of size (num_minibatches, num_processes) witch contains the first frame index
+        #  --for each process (0 for proc1, 128 for proc2 ....)
+        proc_frames_start_idx = np.tile(
+            np.arange(0, self.num_frames, num_frames_per_proc), (num_minibatch, 1))
+        #  -- Starting index for each proc
+        proc_first_idx = np.random.randint(0, recurrence, size=(num_minibatch, num_procs))
+
+        nr_batches_per_proc = (num_frames_per_proc // recurrence) - 1
+        if nr_batches_per_proc < 1:
+            raise ValueError("Recurrence bigger than rollout")
+
+        #  -- First obs that can be used from each process rollout
+        proc_batch_start_idx = proc_frames_start_idx + proc_first_idx
+
+        batches_indexes = np.concatenate(
+            [proc_batch_start_idx + recurrence * i for i in range(nr_batches_per_proc)],
+            axis=1)
+
+        batch_size = min(len(batches_indexes[0]), self.batch_size)
+        batches_starting_indexes = [
+                np.random.choice(
+                    np.random.permutation(batches_indexes[i]),
+                    batch_size, replace=False) for i in range(num_minibatch)]
+
+        return batches_starting_indexes
+
+
     def get_save_data(self):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
@@ -304,7 +349,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         beta = self.icm_beta_coeff # loss factor for Forward and Dynamics Models
         # ------------------------------------------------------------------------------------------
         # Get observations and full states
-        f, prev_frame_exps = self.augment_exp(exps)
+        f, prev_frame_exps = self.augment_exp(exps, agworld_network)
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards
 

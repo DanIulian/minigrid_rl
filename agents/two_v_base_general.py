@@ -52,7 +52,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
 
             with torch.no_grad():
-                if self.acmodel.recurrent:
+                if self.is_recurrent:
                     dist, value, memory = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
                 else:
                     dist, value = self.acmodel(preprocessed_obs)
@@ -82,7 +82,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         # Preprocess experiences
         exps.obs = self.preprocess_obss(exps.obs, device=self.device)
         exps.action = self.actions.transpose(0, 1).reshape(-1)
-        if self.acmodel.recurrent:
+        if self.is_recurrent:
             # T x P x D -> P x T x D -> (P * T) x D
             exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
             # T x P -> P x T -> (P * T) x 1
@@ -100,7 +100,7 @@ class TwoValueHeadsBaseGeneral(BaseAlgo):
         # don't use end of episode signal for intrinsic rewards
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
-            if self.acmodel.recurrent:
+            if self.is_recurrent:
                 _, next_value, _ = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
             else:
                 _, next_value = self.acmodel(preprocessed_obs)
