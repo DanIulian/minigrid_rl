@@ -337,7 +337,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
         })
 
     def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
-
         # ------------------------------------------------------------------------------------------
         # Run worlds models & generate memories
 
@@ -360,6 +359,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
 
         agworld_network.eval()
         for i in range(num_frames_per_proc):
+            import pdb; pdb.set_trace()
             cur_obs = f.obs_image[i]
             actions = f.actions_onehot[i]
 
@@ -374,9 +374,8 @@ class PPORide(TwoValueHeadsBaseGeneral):
         dst_intrinsic_r[-1] = torch.min(dst_intrinsic_r[:-1].mean(dim=0), dst_intrinsic_r[-1])  # we don't have access to last next state :(
 
         # --Normalize intrinsic reward
-        #self.predictor_rff.reset() # do you have to rest it every time ???
+        self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
-
         for i in reversed(range(self.num_frames_per_proc)):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
 

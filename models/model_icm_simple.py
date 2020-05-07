@@ -138,6 +138,8 @@ class CuriosityModel(nn.Module):
             nn.Linear(self._embedding_size, self._embedding_size)
         )
 
+        self.apply(initialize_parameters2)
+
     @property
     def memory_size(self):
         return self._embedding_size

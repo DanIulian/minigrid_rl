@@ -115,7 +115,7 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
         for epoch_no in range(self.epochs):
 
             # Loop for Policy
-            for inds in self._get_batches_starting_indexes():
+            for inds in self._get_batches_start_idx_v2():
                 # Initialize batch values
 
                 batch_entropy = 0
@@ -241,19 +241,52 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
         self.updates_cnt += 1
         return logs
 
-    def _get_batches_starting_indexes(self, recurrence=None, padding=0):
+    def _get_batches_start_idx_v2(self, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
-
-        First, the indexes are the integers from 0 to `self.num_frames` with a step of
-        `self.recurrence`, shifted by `self.recurrence//2` one time in two for having
-        more diverse batches. Then, the indexes are splited into the different batches.
 
         Returns
         -------
         batches_starting_indexes : list of list of int
             the indexes of the experiences to be used at first for each batch
 
+        """
+        num_frames_per_proc = self.num_frames_per_proc
+        num_procs = self.num_procs
+        num_minibatch = self.num_minibatch
+
+        if recurrence is None:
+            recurrence = self.recurrence
+
+        #  --Matrix of size (num_minibatches, num_processes) witch contains the first frame index
+        #  --for each process (0 for proc1, 128 for proc2 ....)
+        proc_frames_start_idx = np.tile(
+            np.arange(0, self.num_frames, num_frames_per_proc), (num_minibatch, 1))
+        #  -- Starting index for each proc
+        proc_first_idx = np.random.randint(0, recurrence, size=(num_minibatch, num_procs))
+
+        nr_batches_per_proc = (num_frames_per_proc // recurrence) - 1
+        if nr_batches_per_proc < 1:
+            raise ValueError("Recurrence bigger than rollout")
+
+        #  -- First obs that can be used from each process rollout
+        proc_batch_start_idx = proc_frames_start_idx + proc_first_idx
+
+        batches_indexes = np.concatenate(
+            [proc_batch_start_idx + recurrence * i for i in range(nr_batches_per_proc)],
+            axis=1)
+
+        batch_size = min(len(batches_indexes[0]), self.batch_size)
+        batches_starting_indexes = [
+                np.random.choice(
+                    np.random.permutation(batches_indexes[i]),
+                    batch_size, replace=False) for i in range(num_minibatch)]
+
+        return batches_starting_indexes
+
+    def _get_batches_starting_indexes(self, recurrence=None, padding=0):
+        """Gives, for each batch, the indexes of the observations given to
+        the model and the experiences used to compute the loss at first.
         """
         num_frames_per_proc = self.num_frames_per_proc
         num_procs = self.num_procs
@@ -273,9 +306,6 @@ class PPOIcmSimple(TwoValueHeadsBaseGeneral):
             indexes = indexes.reshape(-1)
 
         indexes = np.random.permutation(indexes)
-
-        # Shift starting indexes by recurrence//2 half the time
-        self.batch_num += 1
 
         num_indexes = self.batch_size // recurrence
         batches_starting_indexes = [

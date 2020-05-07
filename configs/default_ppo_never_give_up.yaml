@@ -1,5 +1,5 @@
 main:
-  env: MiniGrid-MultiRoom-N6-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-DoorKey-8x8-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
   actual_procs: 6 # type=int, default=16, help="number of processes (default: 16)")
@@ -19,11 +19,11 @@ env_cfg:
   max_image_value: 15.
   obs_type: compact
   normalize: true
-  wrapper: [state_visitation_hash, include_position, get_interactions, occupancy_stats]
+  wrapper: [get_interactions, occupancy_stats]
   no_eval_envs: 0
 
 agent:
-  name: PPORide
+  name: PPONeverGiveUp
   frames_per_proc: 128 # type=int, default=None, help="number of frames per process before update
   (default: 5 for A2C and 128 for PPO)")
   discount: 0.99 # type=float, default=0.99, help="discount factor (default: 0.99)")
@@ -39,16 +39,37 @@ agent:
   epochs: 4 # type=int, default=4, help="number of epochs for PPO (default: 4)")
   num_minibatch: 8 # type=int, default=8, help="number of minibatches per epoch"
   batch_size: 256 # type=int, default=256, help="batch size for PPO (default: 256)")
-  recurrence: &recurrence 4 # type=int, default=1, help="number of timesteps gradient is
+  recurrence: &recurrence 1 # type=int, default=1, help="number of timesteps gradient is
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   min_mem: &min_mem 0  # If min number of recurrence to use mem
-  int_coeff: 0.2
+  int_coeff: 0.3
   ext_coeff: 1.
   beta_coeff: 0.2
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
+  # Parameters for Life Long Exploration using Disagreement
+  disagreement_batch_size: 256
+  disagreeemnt_nr_epochs: 6
+  use_life_long_curiosity: false
+  max_reward_scaling: 5.0
+
+  # Parameters for intra-episodic exploration
+  replacement_stragegy: "fifo"               # episodic memory replacement strategy
+  memory_capacity: 400                       # size of episodic memory
+  embedding_size: [512]                      # size of embedded observation
+  number_of_neighbours: 10                   # number of neighbours used when computing kNN for embedding distances
+  pseudo_counts_constant: 0.001              # pseudo counts constant
+  cluster_distance: 0.008                    # cluster distance
+  kernel_eps: 0.0001                         # kernel epsilon, used when computing the kernel values for pseudo counts
+  max_similarity: 8                          # max similarity, a similarity larger than this one results in 0 intrinsic reward
+
+  # Eval agent info
+  eval_agent_nr_steps: 10                   # Nr of steps between two consecutive runs * 2048 frames when a step occurs
+  eval_agent_nr_runs: 2                     # Nr of episodes ran by the eval agent once
+
+
 model:
-  name: ICMSimpleModel
+  name: NeverGiveUpModel
   recurrence: *recurrence
   min_mem: *min_mem
   text: *text
@@ -58,5 +79,13 @@ model:
   s_size: [1, 1, 1]
   embeddind_size: 256
   hidden_size: 256
+
+  # Intrinsic Motivation Model
+  feature_extractor: random
+  nr_dyn: 5
+  embedding_size: 512
+  residual_size: 512
+  nr_res_blocks: 2
+
 
 extra_logs: [[next_state_loss, nsL, 6f], [next_action_loss, naL, 6f], [mean_intrinsic_rewards, mIrew, 6f], [var_intrinsic_rewards, varIrew, 6f]]

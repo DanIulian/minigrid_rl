@@ -21,14 +21,15 @@ from __future__ import print_function
 import numpy as np
 import torch
 import torch.nn.functional as F
+from utils.utils import RunningMeanStd
 
 
 class EpisodicMemory(object):
     """Episodic memory."""
     def __init__(self,
                  observation_shape,
-                 observation_compare_fn,
                  device,
+                 d_mean,
                  nr_neighbours=10,
                  eps=0.001,
                  cluster_distance=0.008,
@@ -39,9 +40,7 @@ class EpisodicMemory(object):
         """Creates an episodic memory.
         Args:
         observation_shape: Shape of an observation as a list
-        observation_compare_fn: Function used to measure similarity between
-            two observations. This function returns the estimated probability that
-            two observations are similar.
+        d_mean: Running average of squared euclidian distances of K-NN
         nr_neighbors: Number of nearest neighbours when computing pseudo-counts
         eps: Pseudo-counts constant
         cluster_distance: cluster distance when computing kernel simiarity
@@ -60,6 +59,7 @@ class EpisodicMemory(object):
         self._capacity = capacity
         self._replacement = replacement
         self._device = device
+        self._d_mean = d_mean
         self._nr_neighbours = nr_neighbours
         self._eps = eps
         self._cluster_distance = cluster_distance
@@ -70,7 +70,6 @@ class EpisodicMemory(object):
             raise ValueError('Invalid replacement scheme')
 
         self._observation_shape = observation_shape
-        self._observation_compare_fn = observation_compare_fn
         self.reset(False)
 
     def reset(self, show_stats=False):
@@ -145,32 +144,30 @@ class EpisodicMemory(object):
         """
 
         size = len(self)
-
         # -- Compute kNN by computing Euclidian distances between the observation and
         # the memory content
         observation = observation.unsqueeze(0).repeat(size, 1)
         mem = torch.tensor(self._obs_memory[:size], dtype=torch.float, device=self._device)
         dist = torch.norm(observation - mem, dim=1)
-        kNN_values, kNN_idx = torch.topk(dist, self._nr_neighbours, dim=0)
+        kNN_values, kNN_idx = torch.topk(dist, min(size, self._nr_neighbours), dim=0)
 
         knn_dist = kNN_values.pow(2)
 
-        # TODO update moving average
-        dm = compute_moving_average(knn_dist)
+        # -- Update the running average with the current kNN distances
+        self._d_mean.update(knn_dist)
         # -- Compute distances and apply the kernel computing the pseudo counts
-
-        dist = knn_dist / dm
+        dist = knn_dist.div_(self._d_mean.mean)
+        # -- Normalize with cluster distance
         dist = torch.max(dist - self._cluster_distance, torch.zeros_like(dist))
-
+        # -- Scatter the kernel_eps to match the kNN distances tensor shape
         tensor_eps = torch.full(dist.shape, self._kernel_eps, dtype=torch.float, device=self._device)
+        # -- Compute kernel values
         kernel_values = torch.exp(torch.log(tensor_eps) - torch.log(tensor_eps + dist))
 
         sim = (kernel_values.sum().sqrt()).item() + self._eps
         if sim > self._max_similarity:
             return 0
         return 1 / sim
-
-
 
 def similarity_to_memory(observation,
                          episodic_memory,

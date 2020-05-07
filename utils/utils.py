@@ -4,12 +4,13 @@ import torch
 
 class RunningMeanStd(object):
     def __init__(self, epsilon=1e-4, shape=(1)):
-        self.mean = torch.zeros(shape)
-        self.max = torch.FloatTensor([-np.inf])
-        self.var = torch.ones(shape)
-        self.count = torch.Tensor([epsilon])
-        self.epsilon = torch.Tensor([epsilon])
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.mean = torch.zeros(shape, device=device) + 0.0001
+        self.max = torch.tensor([-np.inf], device=device)
+        self.var = torch.ones(shape, device=device)
+        self.count = torch.tensor([epsilon], device=device)
+        self.epsilon = torch.tensor([epsilon], device=device)
 
     def update(self, x):
         if x.size(0) > 1:
@@ -30,7 +31,7 @@ class RunningMeanStd(object):
         new_mean = self.mean + delta * batch_count / tot_count
         m_a = self.var * (self.count)
         m_b = batch_var * (batch_count)
-        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
+        M2 = m_a + m_b + delta.pow(2) * self.count * batch_count / (self.count + batch_count)
         new_var = M2 / (self.count + batch_count)
 
         new_count = batch_count + self.count

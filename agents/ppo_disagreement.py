@@ -35,27 +35,17 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
 
-        self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
         self.nminibatches = getattr(cfg, "nminibatches", 4)
         self.out_dir = getattr(cfg, "out_dir", None)
         self.pre_fill_memories = getattr(cfg, "pre_fill_memories", 1)
 
         self.save_experience_batch = getattr(cfg, "save_experience_batch", 5)
-
-        fe_type = acmodel.feature_extractor.network_type
-        if fe_type == "random":
-            intrinsic_reward_fn = self.calculate_int_reward_rand
-        elif fe_type == "inverse_dynamics":
-            intrinsic_reward_fn = self.calculate_int_reward_inv
-        else:
-            raise ValueError("No such intrinsic reward function")
-
         envs = ParallelEnv(envs)
         super().__init__(envs, acmodel, num_frames_per_proc, discount,
                          gae_lambda, entropy_coef, value_loss_coef,
                          max_grad_norm, recurrence, preprocess_obss, reshape_reward,
-                         exp_used_pred, intrinsic_reward_fn=intrinsic_reward_fn)
+                         exp_used_pred, intrinsic_reward_fn=self.calculate_int_reward_rand)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
@@ -154,7 +144,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         for epoch_no in range(self.epochs):
 
             # Loop for Policy
-            for inds in self._get_batches_starting_indexes():
+            for inds in self._get_batches_start_idx_v2():
                 # Initialize batch values
 
                 batch_entropy = 0
@@ -325,6 +315,50 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         ]
 
         return batches_starting_indexes
+
+    def _get_batches_start_idx_v2(self, recurrence=None, padding=0):
+        """Gives, for each batch, the indexes of the observations given to
+        the model and the experiences used to compute the loss at first.
+
+        Returns
+        -------
+        batches_starting_indexes : list of list of int
+            the indexes of the experiences to be used at first for each batch
+
+        """
+        num_frames_per_proc = self.num_frames_per_proc
+        num_procs = self.num_procs
+        num_minibatch = self.num_minibatch
+
+        if recurrence is None:
+            recurrence = self.recurrence
+
+        #  --Matrix of size (num_minibatches, num_processes) witch contains the first frame index
+        #  --for each process (0 for proc1, 128 for proc2 ....)
+        proc_frames_start_idx = np.tile(
+            np.arange(0, self.num_frames, num_frames_per_proc), (num_minibatch, 1))
+        #  -- Starting index for each proc
+        proc_first_idx = np.random.randint(0, recurrence, size=(num_minibatch, num_procs))
+
+        nr_batches_per_proc = (num_frames_per_proc // recurrence) - 1
+        if nr_batches_per_proc < 1:
+            raise ValueError("Recurrence bigger than rollout")
+
+        #  -- First obs that can be used from each process rollout
+        proc_batch_start_idx = proc_frames_start_idx + proc_first_idx
+
+        batches_indexes = np.concatenate(
+            [proc_batch_start_idx + recurrence * i for i in range(nr_batches_per_proc)],
+            axis=1)
+
+        batch_size = min(len(batches_indexes[0]), self.batch_size)
+        batches_starting_indexes = [
+                np.random.choice(
+                    np.random.permutation(batches_indexes[i]),
+                    batch_size, replace=False) for i in range(num_minibatch)]
+
+        return batches_starting_indexes
+
 
     def get_save_data(self):
         return dict({
