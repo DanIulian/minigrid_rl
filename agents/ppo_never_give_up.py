@@ -374,7 +374,7 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards
 
-        pred_next_state = torch.zeros(num_frames_per_proc + 1,
+        pred_next_state = torch.zeros(num_frames_per_proc,
                                       num_procs,
                                       len(dyn_list),
                                       feature_ext_network.embedding_size,
@@ -417,7 +417,7 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
         self.aux_logs["mean_life_long_modulator"] = np.mean(modulator_r.cpu().numpy())
         self.aux_logs["var_lfe_long_modulator"] = np.var(modulator_r.cpu().numpy())
 
-        return 1 + modulator_r
+        return (modulator_r + 1)
 
     def train_dynamic_models(self,
                              current_embeddings: torch.Tensor,
@@ -487,7 +487,12 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
         dst_intrinsic_r = self.env.get_rollout_intrinsic_rewards()
         if self.modulate_reward:
             modulator = self.calculate_life_long_modulator(exps)
+            norm_modulator = torch.min(
+                torch.max(modulator, torch.ones_like(modulator)),
+                torch.ones_like(modulator) * self.max_reward_scaling
+            )
 
+            dst_intrinsic_r = torch.mul(dst_intrinsic_r, modulator)
 
         # --Normalize intrinsic reward
         self.predictor_rff.reset()
@@ -539,7 +544,7 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
                 # =======================================================================================
                 # Do backpropagation and optimization steps
 
-                total_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
+                total_loss = beta * act_batch_loss + (1 - beta) * state_batch_loss
 
                 optimizer_agworld.zero_grad()
                 total_loss.backward()

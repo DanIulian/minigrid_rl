@@ -359,7 +359,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
 
         agworld_network.eval()
         for i in range(num_frames_per_proc):
-            import pdb; pdb.set_trace()
             cur_obs = f.obs_image[i]
             actions = f.actions_onehot[i]
 

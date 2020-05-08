@@ -88,8 +88,35 @@ def calc_window_stats_helper(args):
     return calc_window_stats(*args)
 
 
+def get_experiments_data(experiments_path, algorithm_names, groupby_column):
+    # Get experiment data
+    dfs = []
+    for algo_name, exp_path in zip(algorithm_names, experiments_path):
+        _, _, df = get_experiment_files(exp_path, files={"log.csv": "read_csv"})
+        df[groupby_column] = df[groupby_column].apply(lambda x: str(x))
+        df['algo_name'] = algo_name
+        dfs.append(df)
+
+    return dfs
+
+
+def filter_dfs(filter_column, filter_value, dfs):
+    # Hack to filter some experiments
+    if filter_column and filter_value:
+        print("FILTERED")
+        filter_value = type(dfs[0].iloc[0][filter_column])(filter_value)
+        for df in dfs:
+            df = df[df[filter_column] == filter_value]
+    else:
+        print("NO FILTER APPLIED")
+
+    return dfs
+
+
 def plot_experiments(experiments_path,
                      algorithm_names,
+                     group_experiments=False,
+                     title=None,
                      plot_values=None,
                      filter_by=None,
                      filter_value=None,
@@ -104,6 +131,8 @@ def plot_experiments(experiments_path,
 
     :param experiments_path:
     :param algorithm_names:
+    :param group_experiments
+    :param title:
     :param plot_value:
     :param filter_by:
     :param filter_value:
@@ -116,40 +145,10 @@ def plot_experiments(experiments_path,
     :return:
     '''
 
-    # Validate config
-    assert (plot_type == "barplot") == (rolling_window is not None), "Window only for error_bar"
+    dfs = get_experiments_data(experiments_path, algorithm_names, groupby_column)
 
-    # Get experiment data
-    dfs = []
-    for algo_name, exp_path in zip(algorithm_names, experiments_path):
-        _, _, df = get_experiment_files(exp_path, files={"log.csv": "read_csv"})
-        df[groupby_column] = df[groupby_column].apply(lambda x: str(x))
-        df['algo_name'] = algo_name
-        dfs.append(df)
-
-    # ==============================================================================================
     # -- FILTER VALUES
-
-    # Hack to filter some experiments
-    if filter_by and filter_value:
-        print("FILTERED")
-        filter_value = type(dfs[0].iloc[0][filter_by])(filter_value)
-        for df in dfs:
-            df = df[df[filter_by] == filter_value]
-    else:
-        print("NO FILTER APPLIED")
-
-    # ==============================================================================================
-
-    # Concat everything
-    data_frame = dfs[0]
-    for df in dfs[1:]:
-        data_frame = data_frame.append(df)
-
-    # For each subplot
-    experiments_group = data_frame.groupby(main_groupby, sort=False)
-
-    # ==============================================================================================
+    dfs = filter_dfs(filter_by, filter_value, dfs)
 
     # Get path to save plots
     print(f"Saving to ...{os.getcwd()}/{save_path}")
@@ -160,12 +159,26 @@ def plot_experiments(experiments_path,
     save_path = full_save_path
 
     # Run column name
-    run_idx = "run_id" if "run_id" in data_frame.columns else "run_id_y"
+    run_idx = "run_id" if "run_id" in dfs[0].columns else "run_id_y"
 
-    # No plot data defined - plot all
     if plot_values is None:
-        plot_values = set(data_frame.columns) - set(EXCLUDED_PLOTS)
-        plot_values = [x for x in plot_values if "." not in x]
+        plot_data = set(dfs[0].columns) - set(EXCLUDED_PLOTS)
+        plot_data = [x for x in plot_data if "." not in x]
+        print("Specify a list of plot values from chosen from below")
+        print(plot_data)
+        exit(0)
+
+    if type(plot_values) is not list:
+        plot_values = list(plot_values)
+
+    if group_experiments:
+        # Concat everything
+        data_frame = pd.concat(dfs, ignore_index=True)
+        # For each subplot
+        experiments_group = data_frame.groupby(main_groupby, sort=False)
+
+    else:
+        pass
 
     # ==============================================================================================
     # -- Generate color maps for unique color_by subgroups,
@@ -180,6 +193,10 @@ def plot_experiments(experiments_path,
         markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
 
     # ==============================================================================================
+    # -- Split the experiments by the grouping element
+    # -- If the x-axis is not the same for all experiments, complete it
+    # -- by duplicating all values until max X axis value is get
+    equal_training_steps = False
 
     def _complete_x_axis(df: pd.DataFrame, max_frames: int) -> pd.DataFrame:
         '''Duplicate last row until max_frames have been achieved
@@ -187,6 +204,7 @@ def plot_experiments(experiments_path,
         step_size = df['frames'].iloc[0]
         last_frame = df['frames'].iloc[len(df['frames']) - 1]
         new_df = pd.DataFrame(df)
+        new_df = new_df.reset_index().drop('index', axis=1)
         for fr in range(last_frame + step_size, max_frames + step_size, step_size):
             new_index = new_df.index[-1] + 1
             new_df = pd.concat([new_df, new_df.tail(1)], ignore_index=True)
@@ -196,150 +214,54 @@ def plot_experiments(experiments_path,
 
     experiments = dict()
     for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
-        max_x_value = exp_gdf['frames'].max()
-        df_list = []
-        for (caca, current_df) in exp_gdf.groupby(["algo_name", run_idx]):
-            df_list.append(_complete_x_axis(current_df, max_x_value))
-        experiments[experiment_name] = pd.concat(df_list, ignore_index=True)
+
+        if equal_training_steps:
+            experiments[experiment_name] = exp_gdf
+
+        else:
+            max_x_value = exp_gdf['frames'].max()
+            df_list = []
+            for _, current_df in exp_gdf.groupby(["algo_name", run_idx]):
+                rez = _complete_x_axis(current_df, max_x_value)
+                df_list.append(rez)
+            experiments[experiment_name] = pd.concat(df_list, ignore_index=True)
 
     # ================================================================================================
 
-    size = int(pow(experiments_group.ngroups, 1 / 2)) + 1
-    w_size = size
-    h_size = size
-    print(w_size, h_size)
-    for plot_f in plot_data:
+    for plot_f in plot_values:
         print(f"Plotting data {plot_f} ...")
 
-        plt.figure()
-        share_ax = None
-        share_ay = None
-        export_data[plot_f] = dict()
-
         # Iterate through continents
-        for i, (experiment_name, exp_gdf) in enumerate(experiments_group):
+        for i, experiment_name in enumerate(experiments.keys()):
+
+            exp_gdf = experiments[experiment_name]
             print(f"Experiment name: {experiment_name}")
 
-            # create subplot axes in a 3x3 grid
-            ax = plt.subplot(h_size, w_size, i + 1, sharex=share_ax, sharey=share_ay)  # n rows,
-            # n cols,
-            # axes position
-            if share_ax is None:
-                share_ax = ax
-            if share_ax is None:
-                share_ay = ax
-            export_data[plot_f][experiment_name] = dict()
+            plt.figure()
 
             # ======================================================================================
+            # plot the continent on these axes
+            if plot_type == "lineplot":
+                ax = sns.lineplot(x=x_axis,
+                                  y=plot_f,
+                                  hue='algo_name',
+                                  data=exp_gdf,
+                                  palette='Set1',
+                                  ci=95)
 
-            if i % w_size == 0:
-                ax.set_ylabel(plot_f)  # TODO default: plot_f
-                # ax.set_ylabel("Fraction")
-            if i >= w_size * (h_size - 1):
-                ax.set_xlabel(x_axis)
+            plt.ylabel(plot_f, fontsize=18)
+            plt.xlabel(x_axis, fontsize=18)
+            plt.setp(ax.get_legend().get_texts(), fontsize='18')  # for legend text
 
             # Set the title
-            if simple:
-                ax.set_title(exp_gdf.iloc[0].title[13:-3])
+            if title is None:
+                plt.title(exp_gdf.iloc[0].title[9:-3], fontsize=24)
             else:
-                ax.set_title(get_title(experiment_name))
+                plt.title(title, fontsize=24)
 
-            # ======================================================================================
-
-            # plot the continent on these axes
-            if plot_type == "error_bar":
-                for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
-                    print(f" Sub-group name: {sub_group_name}")
-
-                    export_data[plot_f][experiment_name][sub_group_name] = dict()
-                    crd_dict = export_data[plot_f][experiment_name][sub_group_name]
-                    max_mean = -np.inf if save_max_w else np.inf
-
-                    try:
-                        assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
-                                                                      f"unique in subgroup"
-
-                        color_name = sub_group_df[color_by].unique()[0]
-
-                        if weights_cl not in sub_group_df.columns:
-                            print(f"[ERROR] No weight column, will fill with 1 ({weights_cl})")
-                            sub_group_df[weights_cl] = 1
-                        else:
-                            if sub_group_df[weights_cl].isna().any():
-                                print(f"[ERROR] Some ({weights_cl}) are NaN ")
-                                sub_group_df[weights_cl] = sub_group_df[weights_cl].fillna(1.)
-
-                        sub_group_dfs = sub_group_df[[x_axis, weights_cl, plot_f]]
-                        unique_x = sub_group_dfs[x_axis].unique()
-                        unique_x.sort()
-
-                        means = np.zeros(len(unique_x))
-                        stds = np.zeros(len(unique_x))
-
-                        for idxs in range(len(unique_x) - rolling_window):
-                            wmean, wstd, win = calc_window_stats(sub_group_dfs, x_axis,
-                                                                 unique_x[idxs],
-                                                                 unique_x[idxs + rolling_window],
-                                                                 plot_f, weights_cl)
-
-                            means[idxs] = wmean
-                            stds[idxs] = wstd
-
-                            if compare_mthd(wmean, max_mean):
-                                crd_dict["df"] = win
-                                max_mean = wmean
-                    except:
-                        print("Error!!!!!!!!!")
-
-                    error_fill_plot(unique_x, means, stds, color=colors_map[color_name], ax=ax)
-
-            elif plot_type == "color":
-                for sub_group_name, sub_group_df in exp_gdf.groupby(groupby_clm):
-                    assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
-                                                                  f"unique in subgroup"
-                    color_name = sub_group_df[color_by].unique()[0]
-                    sub_group_df.plot(x_axis, plot_f, ax=ax, legend=False, kind=kind,
-                                      c=colors_map[color_name].reshape(1, -1), s=1.)
-
-            elif plot_type == "simple":
-                exp_gdf.groupby(groupby_clm).plot(x_axis, plot_f, ax=ax, legend=False, kind=kind)
-            # ======================================================================================
-
-            # set the aspect
-            # adjustable datalim ensure that the plots have the same axes size
-            # ax.set_aspect('equal', adjustable='datalim')
-            plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
-
-        # ==========================================================================================
-
-        if hack_7_plots:
-            # TODO SO so ugly, dont't know why show axis does not work :(
-            ax = plt.subplot(h_size, w_size, 8, sharex=share_ax, sharey=share_ay)  # n rows,
-            ax.axis('off')
-
-        # ==========================================================================================
-
-        # ==========================================================================================
-
-        if show_legend:
-            plt.gcf().legend([legend_elements[x] for x in subgroup_titles], subgroup_titles,
-                             loc="lower right")
-
-        #  TODO default
-        plt.gcf().suptitle(f"{plot_f.capitalize()} colored by max_steps", fontsize=12)  # , y=-0.50,
-        # plt.gcf().suptitle(f"Number of interactions colored by type", fontsize=12)  #, y=-0.50,
-        # plt.gcf().suptitle(f"Fraction of interactions colored by object type", fontsize=12)
-        # x=-0.2)
-
-        if hack_7_plots:
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        else:
             plt.tight_layout()
-
-        plt.subplots_adjust(wspace=0.15, hspace=0.35)
-
-        plt.savefig(f"{save_path}/{plot_f}.png")
-        plt.close()
+            plt.savefig(f"{save_path}/{plot_f}_{experiment_name}.png")
+            plt.close()
 
 
 if __name__ == "__main__":
@@ -375,14 +297,33 @@ if __name__ == "__main__":
         '--plot_type', default="lineplot",
         help="Type of seaborn plot to be used"
     )
-    parser.add_argument('--main_groupby', nargs='+', default="main.env")
-    parser.add_argument('--groupby_column', default="env_cfg.max_episode_steps")
-    parser.add_argument('--color_by', default="env_cfg.max_episode_steps")
-    parser.add_argument('--rolling_window', type=int, default=None)
+    parser.add_argument(
+        '--main_groupby', nargs='+',
+        default="main.env",
+        help=""
+    )
+    parser.add_argument(
+        '--groupby_column', default="env_cfg.max_episode_steps",
+        help=""
+    )
+    parser.add_argument(
+        '--color_by', default="env_cfg.max_episode_steps",
+        help=""
+    )
+    parser.add_argument(
+        '--rolling_window', type=int, default=1,
+        help=""
+    )
+    parser.add_argument(
+        '--group_experiments', action='store_true',
+        default=False,
+        help=""
+    )
 
     args = parser.parse_args()
     plot_experiments(args.experiments_path,
                     args.algorithm_names,
+                    group_experiments=args.group_experiments,
                     plot_values=args.plot_values,
                     filter_by=args.filter_by,
                     filter_value=args.filter_value,
