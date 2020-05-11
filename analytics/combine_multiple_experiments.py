@@ -9,9 +9,16 @@
                --algorithm_names  algo_for_exp1 algo_for_exp2 ...
                --group_experiments
                --plot_values plt_value1, plt_value2 ...
-               --save_path
+               --save_path path_to_save
 
-    2. When used to group multiple values of same exeperiment together
+    2. When used to group multiple values of same experiment together
+
+        python -m analytics.combine_multiple_experiments --experiments_path exp1
+               --save_path path_to _save
+               --x_axis "frames"
+               --melt_data doors_interactions keys_interactions boxes_interactions balls_interactions
+               --algorithm_names algo_name_1
+               --rolling_window 8
 
 '''
 import matplotlib
@@ -185,6 +192,32 @@ def calc_window_stats(df, index_cl, min_index, max_idx, feature_cl, weights_cl):
     return wmean, wstd, window
 
 
+def check_weights_column(df: pd.DataFrame, weights_column: str):
+
+    # Add weights column if not present
+    if weights_column not in df.columns:
+        print(f"No weight column, will fill with 1 ({weights_column})")
+        df.loc[:, weights_column] = 1
+    else:
+        if df[weights_column].isna().any():
+            print(f" Some ({weights_column}) are NaN ")
+            df[weights_column] = df[weights_column].fillna(1.)
+
+
+def generate_colors(df: pd.DataFrame, color_by: str):
+    # -- Generate color maps for unique color_by subgroups,
+    no_colors = df[color_by].nunique()
+    subgroup_titles = list(df[color_by].unique())
+
+    colors = cm.rainbow(np.linspace(0, 1, no_colors))
+    colors_map = {x: y for x, y in zip(subgroup_titles, colors)}
+    legend_elements = {color_name: Line2D(
+        [0], [0], marker='o', color=colors_map[color_name], label='Scatter',
+        markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
+
+    return subgroup_titles, colors_map
+
+
 def plot_experiments(experiments_path,
                      algorithm_names,
                      group_experiments=False,
@@ -199,14 +232,15 @@ def plot_experiments(experiments_path,
                      color_by="None",
                      melt_data=None,
                      rolling_window=8,
+                     weights_column="ep_completed",
                      save_path="combined_results"):
     '''
 
     :param experiments_path:
     :param algorithm_names:
-    :param group_experiments
+    :param group_experiments:
     :param title:
-    :param plot_value:
+    :param plot_values:
     :param filter_by:
     :param filter_value:
     :param x_axis:
@@ -214,7 +248,10 @@ def plot_experiments(experiments_path,
     :param main_groupby:
     :param groupby_column:
     :param color_by:
+    :param melt_data:
     :param rolling_window:
+    :param weights_column:
+    :param save_path:
     :return:
     '''
 
@@ -239,6 +276,7 @@ def plot_experiments(experiments_path,
         if plot_values is None:
             plot_data = set(dfs[0].columns) - set(EXCLUDED_PLOTS)
             plot_data = [x for x in plot_data if "." not in x]
+            import pdb; pdb.set_trace()
             print("Specify a list of plot values from chosen from below")
             print(plot_data)
             exit(0)
@@ -248,6 +286,8 @@ def plot_experiments(experiments_path,
 
         # Concat everything
         data_frame = pd.concat(dfs, ignore_index=True)
+        check_weights_column(data_frame, weights_column)
+
         # For each subplot
         experiments_group = data_frame.groupby(main_groupby, sort=False)
 
@@ -257,13 +297,15 @@ def plot_experiments(experiments_path,
                                   save_path, title, color_by)
 
     else:
+        check_weights_column(dfs[0], weights_column)
         plot_experiment_multiple_data(dfs[0],
                                       main_groupby,
                                       x_axis,
                                       melt_data,
                                       save_path,
                                       title,
-                                      rolling_window=8,
+                                      rolling_window=rolling_window,
+                                      weights_column=weights_column,
                                       groupby_column="Melt_type",
                                       color_by="Melt_type")
 
@@ -277,17 +319,9 @@ def plot_experiments_multiple(data_frame: pd.DataFrame,
                               save_path: str,
                               title: str = None,
                               color_by: str = "None"):
-    # ==============================================================================================
+
     # -- Generate color maps for unique color_by subgroups,
-
-    no_colors = data_frame[color_by].nunique()
-    subgroup_titles = list(data_frame[color_by].unique())
-
-    colors = cm.rainbow(np.linspace(0, 1, no_colors))
-    colors_map = {x: y for x, y in zip(subgroup_titles, colors)}
-    legend_elements = {color_name: Line2D(
-        [0], [0], marker='o', color=colors_map[color_name], label='Scatter',
-        markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
+    subgroup_titles, colors_map = generate_colors(data_frame, color_by)
 
     # ==============================================================================================
     # -- Split the experiments by the grouping element
@@ -331,10 +365,48 @@ def plot_experiments_multiple(data_frame: pd.DataFrame,
                                   data=exp_gdf,
                                   palette='Set1',
                                   ci=95)
+                plt.setp(ax.get_legend().get_texts(), fontsize='18')  # for legend text
 
+            elif plot_type == "error_plot":
+
+                # For each sub-group that will appear in the same plot
+                for sub_group_name, sub_group_df in exp_gdf.groupby('algo_name'):
+                    print(f" Sub-group name: {sub_group_name}")
+                    try:
+                        assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
+                                                                      f"unique in subgroup"
+
+                        color_name = sub_group_df[color_by].unique()[0]
+                        sub_group_dfs = sub_group_df[[x_axis, weights_column, plot_f]]
+                        unique_x = sub_group_dfs[x_axis].unique()
+                        unique_x.sort()
+
+                        means = np.zeros(len(unique_x))
+                        stds = np.zeros(len(unique_x))
+
+                        # take mean and std value for rolling window
+                        for idxs in range(len(unique_x) - rolling_window):
+                            wmean, wstd, win = calc_window_stats(sub_group_dfs, x_axis,
+                                                                 unique_x[idxs],
+                                                                 unique_x[idxs + rolling_window],
+                                                                 plot_f, weights_column)
+
+                            means[idxs] = wmean
+                            stds[idxs] = wstd
+                    except:
+                        print("Error!!!!!!!!!")
+
+                    error_fill_plot(unique_x, means, stds, color=colors_map[color_name])
+                plt.gcf().legend([legend_elements[x] for x in subgroup_titles], subgroup_titles,
+                                 loc="upper left")
+
+
+            plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
             plt.ylabel(plot_f, fontsize=18)
+            plt.yticks(fontsize=16)
+
             plt.xlabel(x_axis, fontsize=18)
-            plt.setp(ax.get_legend().get_texts(), fontsize='18')  # for legend text
+            plt.xticks(fontsize=16)
 
             # Set the title
             if title is None:
@@ -354,6 +426,7 @@ def plot_experiment_multiple_data(df: pd.DataFrame,
                                   save_path: str,
                                   title: str = None,
                                   rolling_window: int = 8,
+                                  weights_column: str = "ep_completed",
                                   groupby_column: str = "Melt_type",
                                   color_by: str = "Melt_type"):
 
@@ -363,23 +436,14 @@ def plot_experiment_multiple_data(df: pd.DataFrame,
     id_vars = list(set(df.columns) - set(melt_data))
     df = pd.melt(df, id_vars=id_vars, var_name="Melt_type", value_name="Melt_value")
 
+    # Generates colors
+    subgroup_titles, colors_map = generate_colors(df, color_by)
+
     # Group by environment type
     experiments_group = df.groupby(main_groupby, sort=False)
 
     # ==============================================================================================
-    # -- Generate color maps for unique color_by subgroups,
-    no_colors = df[color_by].nunique()
-    subgroup_titles = list(df[color_by].unique())
-
-    colors = cm.rainbow(np.linspace(0, 1, no_colors))
-    colors_map = {x: y for x, y in zip(subgroup_titles, colors)}
-    legend_elements = {color_name: Line2D(
-        [0], [0], marker='o', color=colors_map[color_name], label='Scatter',
-        markerfacecolor=colors_map[color_name], markersize=7) for color_name in subgroup_titles}
-
-    # ==============================================================================================
     plot_f = "Melt_value"
-    weights_column = "ep_completed"
     print(f"Plotting data {plot_f} ...")
 
     # Iterate through continents
@@ -393,16 +457,8 @@ def plot_experiment_multiple_data(df: pd.DataFrame,
             try:
                 assert sub_group_df[color_by].nunique() == 1, f"color by: {color_by} not " \
                                                               f"unique in subgroup"
+
                 color_name = sub_group_df[color_by].unique()[0]
-
-                if weights_column not in sub_group_df.columns:
-                    print(f"[ERROR] No weight column, will fill with 1 ({weights_column})")
-                    sub_group_df[weights_column] = 1
-                else:
-                    if sub_group_df[weights_column].isna().any():
-                        print(f"[ERROR] Some ({weights_column}) are NaN ")
-                        sub_group_df[weights_column] = sub_group_df[weights_column].fillna(1.)
-
                 sub_group_dfs = sub_group_df[[x_axis, weights_column, plot_f]]
                 unique_x = sub_group_dfs[x_axis].unique()
                 unique_x.sort()
@@ -429,7 +485,10 @@ def plot_experiment_multiple_data(df: pd.DataFrame,
                          loc="upper left")
 
         plt.ylabel("Number of interactions", fontsize=18)
+        plt.yticks(fontsize=16)
+
         plt.xlabel(x_axis, fontsize=18)
+        plt.xticks(fontsize=16)
 
         # Set the title
         if title is None:
@@ -444,7 +503,6 @@ def plot_experiment_multiple_data(df: pd.DataFrame,
 
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser(description='Plots plots.')
 
     parser.add_argument(
@@ -501,13 +559,54 @@ if __name__ == "__main__":
         '--save_path', default="combined_results",
         help=""
     )
-
     parser.add_argument(
-        '--melt_data', nargs='+', default=None,
+        '--melt_data_custom', nargs='+', default=None,
         help="List of values to be plotted together on the same figure"
     )
 
+    parser.add_argument(
+        '--weights_column', default="ep_completed",
+        help="DataFrame column to be used as weights for weighted average\n"
+             "when computing the rolling window for multiple plots on same graph"
+    )
+    parser.add_argument(
+        "--melt_data", default=None,
+        help="Choose melt data from predifined list of "
+             "[object_type_interactions, objects_interactions, actions_intrinscic_rewards]"
+    )
+
+    melt_data_dict = {
+        'object_type_interactions': [
+            'keys_interactions',
+            'boxes_interactions',
+            'balls_interactions',
+            'doors_interactions'
+        ],
+        'objects_interactions': [
+            "doors_opened",
+            "boxes_picked",
+            "keys_picked",
+            "balls_picked",
+            "doors_closed",
+            "boxes_broken",
+            "keys_dropped",
+            "balls_dropped",
+            "boxes_dropped",
+        ],
+        'actions_intrinsic_rewards': [
+            "move_forward_mean_int_r",
+            "turn_mean_int_r",
+            "obj_interactions_mean_int_r",
+            "obj_toggle_mean_int_r"
+        ]
+    }
+
     args = parser.parse_args()
+    if args.melt_data:
+        melt_data = melt_data_dict[args.melt_data]
+    else:
+        melt_data = args.melt_data_custom
+
     plot_experiments(args.experiments_path,
                      args.algorithm_names,
                      group_experiments=args.group_experiments,
@@ -521,4 +620,5 @@ if __name__ == "__main__":
                      color_by=args.color_by,
                      rolling_window=args.rolling_window,
                      save_path=args.save_path,
-                     melt_data=args.melt_data)
+                     melt_data=melt_data,
+                     weights_column=args.weights_column)
