@@ -10,6 +10,7 @@ from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
+from agents.eval_agent import EvalAgent
 
 
 class PPORide(TwoValueHeadsBaseGeneral):
@@ -70,6 +71,17 @@ class PPORide(TwoValueHeadsBaseGeneral):
         self.prev_frame_exps = None
 
         # -- Init evaluator envs
+        # Eval envs
+        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
+        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
+        self.eval_agent = EvalAgent(envs,
+                                    acmodel.policy_model,
+                                    None,
+                                    self.preprocess_obss,
+                                    self.out_dir,
+                                    eval_agent_nr_steps,
+                                    eval_nr_runs)
+
 
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
@@ -89,7 +101,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
         self.optimizer_agworld = getattr(torch.optim, optimizer)(
             self.acmodel.curiosity_model.parameters(), **optimizer_args)
 
-
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
             self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
@@ -99,6 +110,8 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # Collect experiences
 
         exps, logs = self.collect_experiences()
+        self.eval_agent.on_new_observation() # this happens every 2048 frames
+
 
         # Initialize log values
         log_entropies = []
@@ -396,13 +409,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         loss_m_act = torch.nn.CrossEntropyLoss()
 
         log_state_loss = []
-        log_state_loss_same = []
-        log_state_loss_diffs = []
-
         log_act_loss = []
-        log_act_loss_same = []
-        log_act_loss_diffs = []
-
         log_grad_agworld_norm = []
 
         for epoch_no in range(self.epochs):
@@ -430,52 +437,9 @@ class PPORide(TwoValueHeadsBaseGeneral):
                 log_act_loss.append(act_batch_loss.item())
                 log_state_loss.append(state_batch_loss.item())
                 # ======================================================================================
-                # Compute state & action loss for same states and different states
-
-                # if all episodes ends at once, can't compute same/diff losses
-                if next_mask.sum() == 0:
-                    continue
-
-                next_mask_as_bool = next_mask.to(torch.bool)
-                same = (obs[next_mask_as_bool] == next_obs[next_mask_as_bool]).all(1).all(1).all(1)
-
-                s_pred_act = pred_act[next_mask_as_bool]
-                s_crt_act = crt_actions[next_mask_as_bool]
-
-                s_pred_state = pred_state[next_mask_as_bool]
-                s_crt_state = (next_state_embedding.detach())[next_mask_as_bool]
-
-                # if all are same/diff take care to empty tensors
-                if same.sum() == same.shape[0]:
-                    act_batch_loss_same = loss_m_act(s_pred_act[same], s_crt_act[same]).itme()
-                    state_batch_loss_same = loss_m_state(s_pred_state[same], s_crt_state[same]).item()
-                    act_batch_loss_diff = 0.0
-                    state_batch_loss_diffs = 0.0
-
-
-                elif same.sum() == 0:
-                    act_batch_loss_diff = loss_m_act(s_pred_act[~same], s_crt_act[~same]).item()
-                    state_batch_loss_diffs = loss_m_state(s_pred_state[~same], s_crt_state[~same]).item()
-                    act_batch_loss_same = 0.0
-                    state_batch_loss_same = 0.0
-
-                else:
-                    act_batch_loss_same = loss_m_act(s_pred_act[same], s_crt_act[same]).item()
-                    act_batch_loss_diff = loss_m_act(s_pred_act[~same], s_crt_act[~same]).item()
-
-                    state_batch_loss_same = loss_m_state(s_pred_state[same], s_crt_state[same]).item()
-                    state_batch_loss_diffs = loss_m_state(s_pred_state[~same], s_crt_state[~same]).item()
-
-                log_state_loss_same.append(state_batch_loss_same)
-                log_state_loss_diffs.append(state_batch_loss_diffs)
-
-                log_act_loss_same.append(act_batch_loss_same)
-                log_act_loss_diffs.append(act_batch_loss_diff)
-                # =======================================================================================
-
                 # Do backpropagation and optimization steps
 
-                total_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
+                total_loss = beta * act_batch_loss + (1 - beta) * state_batch_loss
 
                 optimizer_agworld.zero_grad()
 
@@ -493,12 +457,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
         self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
         self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
-
-        self.aux_logs['next_state_loss_same'] = np.mean(log_state_loss_same)
-        self.aux_logs['next_state_loss_diffs'] = np.mean(log_state_loss_diffs)
-
-        self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
-        self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
 
         return dst_intrinsic_r
 
@@ -525,8 +483,8 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # Process
         if "state_visitation" in self.obss[0][0].keys():
             full_state_visitation = [self.obss[i][j]["state_visitation"]
-                                      for j in range(self.num_procs)
-                                      for i in range(self.num_frames_per_proc)]
+                                     for j in range(self.num_procs)
+                                     for i in range(self.num_frames_per_proc)]
 
             exps.states_visitation = preprocess_images(full_state_visitation,
                                                        device=self.device,
@@ -545,7 +503,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # -- MOVE FORWARD INTRINSIC REWARDS
         int_r = intrinsic_rewards[actions == ActionNames.MOVE_FORWARD].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["move_forward_mean_int_r"] = np.mean(int_r)
         self.aux_logs["move_forward_var_int_r"] = np.var(int_r)
@@ -555,7 +513,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # -- TURNING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.TURN_LEFT) | (actions == ActionNames.TURN_RIGHT)].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["turn_mean_int_r"] = np.mean(int_r)
         self.aux_logs["turn_var_int_r"] = np.var(int_r)
@@ -565,7 +523,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # -- OBJECT PICKING UP / DROPPING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.PICK_UP) | (actions == ActionNames.DROP) ].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_interactions_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_interactions_var_int_r"] = np.var(int_r)
@@ -575,7 +533,7 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # -- OBJECT TOGGLE (OPEN DOORS, BREAKING BOXES)
         int_r = intrinsic_rewards[actions == ActionNames.INTERACT].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_toggle_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)

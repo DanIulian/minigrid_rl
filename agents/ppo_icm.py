@@ -95,11 +95,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.optimizer_agworld = getattr(torch.optim, optimizer)(
             self.acmodel.curiosity_model.parameters(), **optimizer_args)
 
-
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
             self.optimizer_agworld.load_state_dict(agent_data["optimizer_agworld"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
+            self.predictor_rff = agent_data["predictor_rff"]  # type: IntrinsicReward Normalization
 
     def update_parameters(self):
         # Collect experiences
@@ -325,6 +325,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             "optimizer_policy": self.optimizer_policy.state_dict(),
             "optimizer_agworld": self.optimizer_agworld.state_dict(),
             "predictor_rms": self.predictor_rms,
+            "predictor_rff": self.predictor_rff,
         })
 
     def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
@@ -585,7 +586,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # -- MOVE FORWARD INTRINSIC REWARDS
         int_r = intrinsic_rewards[actions == ActionNames.MOVE_FORWARD].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["move_forward_mean_int_r"] = np.mean(int_r)
         self.aux_logs["move_forward_var_int_r"] = np.var(int_r)
@@ -595,7 +596,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # -- TURNING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.TURN_LEFT) | (actions == ActionNames.TURN_RIGHT)].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["turn_mean_int_r"] = np.mean(int_r)
         self.aux_logs["turn_var_int_r"] = np.var(int_r)
@@ -605,7 +606,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # -- OBJECT PICKING UP / DROPPING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.PICK_UP) | (actions == ActionNames.DROP) ].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_interactions_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_interactions_var_int_r"] = np.var(int_r)
@@ -615,7 +616,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         # -- OBJECT TOGGLE (OPEN DOORS, BREAKING BOXES)
         int_r = intrinsic_rewards[actions == ActionNames.INTERACT].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_toggle_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)

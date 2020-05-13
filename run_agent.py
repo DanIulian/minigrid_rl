@@ -1,156 +1,239 @@
-# AndreiN, 2019
-# parts from https://github.com/lcswillems/torch-rl
+''' Dan Iulian Muntean 2020
+    Generic agent for policy evaluation
+'''
 
-#!/usr/bin/env python3
-
-import argparse
-import gym
-import time
-import datetime
+from gym_minigrid.wrappers import *
 import torch
-import torch_rl
-import sys
-import cv2
-from liftoff.config import read_config
-from argparse import Namespace
-from analytics import visualize_episode
+import torch.nn
+
 import numpy as np
+import os
+import matplotlib.pyplot as plt
+import cv2
+import tqdm
+import gym
+
+import utils
+from gym_minigrid.window import Window
+from models import get_model
+from agents import get_agent
+from utils import gym_wrappers
+from argparse import Namespace
 
 try:
     import gym_minigrid
 except ImportError:
-    pass
-
-import utils
-from utils import gym_wrappers
-
-def post_process_args(args: NameError) -> None:
-    args.mem = args.recurrence > 1
-
-
-def run(full_args: Namespace) -> None:
-
-    args = full_args.main
-    agent_args = full_args.agent
-    model_args = full_args.model
-
-    if args.seed == 0:
-        args.seed = full_args.run_id + 1
-    max_eprews = args.max_eprews
-
-    post_process_args(agent_args)
-    post_process_args(model_args)
-
-    model_dir = full_args.cfg_dir
-    print(model_dir)
-
-    # ==============================================================================================
-    # Set seed for all randomness sources
-    utils.seed(args.seed)
-
-    # ==============================================================================================
-    # Generate environment
-
-    env = gym.make(args.env)
-    env.max_steps = full_args.env_cfg.max_episode_steps
-    env.seed(args.seed + 10000 * 0)
-
-    env = gym_wrappers.RecordingBehaviour(env)
-
-    # Define obss preprocessor
-    max_image_value = full_args.env_cfg.max_image_value
-    normalize_img = full_args.env_cfg.normalize
-    obs_space, preprocess_obss = utils.get_obss_preprocessor(args.env, env.observation_space,
-                                                             model_dir,
-                                                             max_image_value=max_image_value,
-                                                             normalize=normalize_img)
-    # ==============================================================================================
-    # Load training status
-    try:
-        status = utils.load_status(model_dir)
-    except OSError:
-        status = {"num_frames": 0, "update": 0}
-
-    saver = utils.SaveData(model_dir, save_best=args.save_best, save_all=args.save_all)
-    model, agent_data, other_data = None, dict(), None
-    try:
-        # Continue from last point
-        model, agent_data, other_data = saver.load_training_data(best=False)
-        print("Training data exists & loaded successfully\n")
-    except OSError:
-        print("Could not load training data\n")
-
-    if torch.cuda.is_available():
-        model.cuda()
-        device = torch.device("cuda")
-    else:
-        model.cpu()
-        device = torch.device("cpu")
-
-    # ==============================================================================================
-    # Test model
-
-    done = False
-    model.eval()
-
-    initial_image = None
-
-    if agent_args.name == 'PPORND':
-        model = model.policy
-
-    import argparse
-    n_cfg = argparse.Namespace()
-    viz = visualize_episode.VisualizeEpisode(n_cfg)
-
-    obs = env.reset()
-    memory = torch.zeros(1, model.memory_size, device=device)
-    while True:
-        if done:
-            agent_behaviour = env.get_behaviour()
-            nr_steps = agent_behaviour['step_count']
-            map_shape = np.array((agent_behaviour['full_states'].shape[1], agent_behaviour['full_states'].shape[2]))
-            new_img = viz.draw_single_episode(initial_image, agent_behaviour['positions'][:nr_steps].astype(np.uint8),
-                                              map_shape, agent_behaviour['actions'][:nr_steps].astype(np.uint8))
-
-            cv2.imshow("Map", new_img)
-            cv2.waitKey(0)
-
-            obs = env.reset()
-            memory = torch.zeros(1, model.memory_size, device=device)
+    print("Can not import MiniGrid-ENV")
+    exit(0)
 
 
 
-        time.sleep(0.1)
-        renderer = env.render()
-        if initial_image is None:
-            initial_image = renderer.getArray()
+class RGBImgWrapper(gym.core.ObservationWrapper):
+    """
+    Wrapper to use fully observable RGB image as the only observation output,
+    no language/mission. This can be used to have the agent to solve the
+    gridworld in pixel space.
+    """
 
-        preprocessed_obs = preprocess_obss([obs], device=device)
-        if model.recurrent:
-            dist, _, memory = model(preprocessed_obs, memory)
+    def __init__(self, env, tile_size=8):
+        super().__init__(env)
+
+        self.tile_size = tile_size
+
+        self.observation_space.spaces['rendered_image'] = spaces.Box(
+            low=0,
+            high=255,
+            shape=(self.env.width*tile_size, self.env.height*tile_size, 3),
+            dtype='uint8'
+        )
+
+    def observation(self, obs):
+        env = self.unwrapped
+
+        rgb_img = env.render(
+            mode='rgb_array',
+            highlight=False,
+            tile_size=self.tile_size
+        )
+
+        return {
+            'mission': obs['mission'],
+            'image': obs['image'],
+            'rendered_image': rgb_img
+        }
+
+
+class RGBImgPartialWrapper(gym.core.ObservationWrapper):
+    """
+    Wrapper to use partially observable RGB image as the only observation output
+    This can be used to have the agent to solve the gridworld in pixel space.
+    """
+
+    def __init__(self, env, tile_size=8):
+        super().__init__(env)
+
+        self.tile_size = tile_size
+
+        obs_shape = env.observation_space['image'].shape
+        self.observation_space.spaces['rendered_image'] = spaces.Box(
+            low=0,
+            high=255,
+            shape=(obs_shape[0] * tile_size, obs_shape[1] * tile_size, 3),
+            dtype='uint8'
+        )
+
+    def observation(self, obs):
+        env = self.unwrapped
+
+        rgb_img_partial = env.get_obs_render(
+            obs['image'],
+            tile_size=self.tile_size
+        )
+
+        return {
+            'mission': obs['mission'],
+            'image': obs['image'],
+            'rendered_image': rgb_img_partial
+        }
+
+
+class EvalAgent(object):
+
+    def __init__(self,
+                 env_name,
+                 path_to_checkpoint,
+                 nr_runs=2,
+                 argmax=False,
+                 view_type="FullView",
+                 max_steps=400):
+
+        self._env_name = env_name
+        self._path_to_checkpoint = path_to_checkpoint
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._nr_runs = nr_runs
+        self._view_type = view_type
+        self._argmax = argmax
+        self._max_steps = max_steps
+        self._window = Window(self._env_name)
+        self._make_env()
+        _, self._obs_preprocess_fn = self.obs_preprocess()
+        self.load_model()
+
+        if self._model.recurrent:
+            self._memories = torch.zeros(1, self._model.memory_size, device=self._device)
+
+        self._step_count = 0
+
+        print("Argmax - {}".format(self._argmax))
+
+    def _make_env(self):
+        # create a new env
+        self._eval_env = gym.make(self._env_name)
+        self._eval_env.max_steps = self._max_steps
+        self._eval_env.seed(np.random.randint(1, 10000))
+
+        if self._view_type == "FullView":
+            self._eval_env = RGBImgWrapper(self._eval_env)
+        elif self._view_type == "AgentView":
+            self._eval_env = RGBImgPartialWrapper(self._eval_env)
         else:
-            dist, value = model(preprocessed_obs)
+            raise ValueError("Incorrect view name: {}".format(self._view_type))
 
+    def obs_preprocess(self) -> tuple:
+        # Define obss preprocessor
+        obs_space, preprocess_obss = utils.get_obss_preprocessor(self._env_name,
+                                                                 self._eval_env.observation_space,
+                                                                 '.',
+                                                                 max_image_value=15.0,
+                                                                 normalize=True,
+                                                                 permute=False,
+                                                                 obs_type="compact",
+                                                                 type=None)
+        return obs_space, preprocess_obss
 
-        #action = dist.probs.argmax()
-        action = dist.sample()
-        obs, reward, done, _ = env.step(action.cpu().numpy())
-        if renderer.window is None:
-            break
+    def load_model(self):
+        print("Checkpoint is in {}".format(self._path_to_checkpoint))
+        try:
+            status = utils.load_status(self._path_to_checkpoint)
+        except OSError:
+            status = {"num_frames": 0, "update": 0}
 
+        saver = utils.SaveData(self._path_to_checkpoint, save_best=True, save_all=True)
+        self._model, self._agent_data, self._other_data = None, dict(), dict()
+        try:
+            # Continue from last point
+            self._model, self._agent_data, self._other_data = saver.load_training_data(best=False)
+            print("Training data exists & loaded successfully\n")
+        except OSError:
+            print("Could not load training data\n")
 
-def main() -> None:
-    import os
-    """ Read configuration from disk (the old way)"""
-    # Reading args
-    full_args = read_config()  # type: Args
-    args = full_args.main
+    def run_episode(self):
 
-    if not hasattr(full_args, "run_id"):
-        full_args.run_id = 0
+        print("Evaluating agent after for {} episodes".format(self._nr_runs))
+        self._model.eval()
 
-    run(full_args)
+        for i in tqdm.tqdm(range(self._nr_runs)):
+            obs = self._eval_env.reset()
+            human_obs = obs["rendered_image"]
+            episode_obs = [human_obs]
+
+            while True:
+                #preprocess observation
+                preprocessed_obs = self._obs_preprocess_fn([obs], device=self._device)
+
+                with torch.no_grad():
+                    if self._model.recurrent:
+                        dist, _, self._memories = self._model(preprocessed_obs, self._memories)
+                    else:
+                        dis, _ = self._model(preprocessed_obs)
+
+                if self._argmax:
+                    _, action, = dist.probs.max(1, keepdim=True)
+                else:
+                    action = dist.sample()
+
+                print(action.cpu().numpy(), dist.probs)
+                obs, reward, done, info = self._eval_env.step(action.cpu().numpy())
+                self._window.show_img(obs["rendered_image"])
+                if done:
+                    break
+
+        self._model.train()
 
 
 if __name__ == "__main__":
-    main()
+    from argparse import ArgumentParser
+
+    arg_parse = ArgumentParser()
+    arg_parse.add_argument(
+        '--env_name',
+        default="MiniGrid-DoorKey16x16-v0"
+    )
+    arg_parse.add_argument(
+        '--path_to_checkpoint',
+        default=None
+    )
+    arg_parse.add_argument(
+        '--nr_runs',
+        default=2,
+        type=int
+    )
+    arg_parse.add_argument(
+        '--max_steps',
+        default=400,
+        type=int
+    )
+    arg_parse.add_argument(
+        '--view_type',
+        default="FullView"
+    )
+
+    args = arg_parse.parse_args()
+
+    eval_agent = EvalAgent(args.env_name,
+                           args.path_to_checkpoint,
+                           nr_runs=args.nr_runs,
+                           view_type=args.view_type,
+                           max_steps=args.max_steps)
+    eval_agent.run_episode()
+

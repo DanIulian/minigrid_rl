@@ -3,6 +3,7 @@
 '''
 
 from gym_minigrid.wrappers import *
+
 import torch
 import torch.nn
 
@@ -199,6 +200,8 @@ class EvalAgent(object):
 
         self._step_count = 0
 
+        print("Argmax - {}".format(self._argmax))
+
     def _run_episode(self, nr_runs, nr_steps):
 
         print("Evaluating agent after {} for {} episodes".format(nr_steps, nr_runs))
@@ -221,7 +224,7 @@ class EvalAgent(object):
                         dis, _ = self._model(preprocessed_obs)
 
                 if self._argmax:
-                    action = dist.probs.max(1, keepdim=True)
+                    action, _ = dist.probs.max(1, keepdim=True)
                 else:
                     action = dist.sample()
 

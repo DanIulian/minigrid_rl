@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
-from utils.utils import RunningMeanStd, RewardForwardFilter
+from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
 from agents.eval_agent import EvalAgent
@@ -525,7 +525,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # -- MOVE FORWARD INTRINSIC REWARDS
         int_r = intrinsic_rewards[actions == ActionNames.MOVE_FORWARD].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["move_forward_mean_int_r"] = np.mean(int_r)
         self.aux_logs["move_forward_var_int_r"] = np.var(int_r)
@@ -535,7 +535,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # -- TURNING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.TURN_LEFT) | (actions == ActionNames.TURN_RIGHT)].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["turn_mean_int_r"] = np.mean(int_r)
         self.aux_logs["turn_var_int_r"] = np.var(int_r)
@@ -545,7 +545,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # -- OBJECT PICKING UP / DROPPING INTRINSIC REWARDS
         int_r = intrinsic_rewards[(actions == ActionNames.PICK_UP) | (actions == ActionNames.DROP) ].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_interactions_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_interactions_var_int_r"] = np.var(int_r)
@@ -555,7 +555,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # -- OBJECT TOGGLE (OPEN DOORS, BREAKING BOXES)
         int_r = intrinsic_rewards[actions == ActionNames.INTERACT].cpu().numpy()
         if len(int_r) == 0:
-            int_r = np.array([0], dtyp=np.float32)
+            int_r = np.array([0], dtype=np.float32)
 
         self.aux_logs["obj_toggle_mean_int_r"] = np.mean(int_r)
         self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)
