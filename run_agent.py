@@ -105,7 +105,8 @@ class EvalAgent(object):
                  nr_runs=2,
                  argmax=False,
                  view_type="FullView",
-                 max_steps=400):
+                 max_steps=400,
+                 model_index=None):
 
         self._env_name = env_name
         self._path_to_checkpoint = path_to_checkpoint
@@ -115,6 +116,7 @@ class EvalAgent(object):
         self._argmax = argmax
         self._max_steps = max_steps
         self._window = Window(self._env_name)
+        self._model_index = model_index
         self._make_env()
         _, self._obs_preprocess_fn = self.obs_preprocess()
         self.load_model()
@@ -162,7 +164,7 @@ class EvalAgent(object):
         self._model, self._agent_data, self._other_data = None, dict(), dict()
         try:
             # Continue from last point
-            self._model, self._agent_data, self._other_data = saver.load_training_data(best=False)
+            self._model, self._agent_data, self._other_data = saver.load_training_data(best=False, index=self._model_index)
             print("Training data exists & loaded successfully\n")
         except OSError:
             print("Could not load training data\n")
@@ -227,6 +229,10 @@ if __name__ == "__main__":
         '--view_type',
         default="FullView"
     )
+    arg_parse.add_argument(
+        '--model_index',
+        default=None
+    )
 
     args = arg_parse.parse_args()
 
@@ -234,6 +240,7 @@ if __name__ == "__main__":
                            args.path_to_checkpoint,
                            nr_runs=args.nr_runs,
                            view_type=args.view_type,
-                           max_steps=args.max_steps)
+                           max_steps=args.max_steps,
+                           model_index=args.model_index)
     eval_agent.run_episode()
 

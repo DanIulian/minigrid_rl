@@ -70,19 +70,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # -- Previous batch of experiences last frame
         self.prev_frame_exps = None
 
-        # -- Init evaluator envs
-        # Eval envs
-        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
-        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
-        self.eval_agent = EvalAgent(envs,
-                                    acmodel.policy_model,
-                                    None,
-                                    self.preprocess_obss,
-                                    self.out_dir,
-                                    eval_agent_nr_steps,
-                                    eval_nr_runs)
-
-
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
 
@@ -110,8 +97,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
         # Collect experiences
 
         exps, logs = self.collect_experiences()
-        self.eval_agent.on_new_observation() # this happens every 2048 frames
-
 
         # Initialize log values
         log_entropies = []
@@ -419,11 +404,6 @@ class PPORide(TwoValueHeadsBaseGeneral):
                 next_obs = f.obs_image[inds + 1].detach()
                 crt_actions = f.action[inds].long().detach()
                 crt_actions_one = f.actions_onehot[inds].detach()
-
-                # take masks and convert them to 1D tensor for indexing
-                # use next masks because done gives you the new game obs
-                next_mask = f.mask[inds + 1].long().detach()
-                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
 
                 _, crt_state_embedding = agworld_network(obs)
                 _, next_state_embedding = agworld_network(next_obs)

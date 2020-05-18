@@ -2,16 +2,17 @@
     inspired from https://github.com/lcswillems/torch-rl
 """
 
-import numpy
+import numpy as np
 import torch
-import torch.nn.functional as F
 
-from agents.two_v_base import TwoValueHeadsBase
+from agents.two_v_base_general import TwoValueHeadsBaseGeneral
 from torch_rl.utils import DictList
-from utils.utils import RunningMeanStd, RewardForwardFilter
+from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
+from utils.format import preprocess_images
+from torch_rl.utils import ParallelEnv
 
 
-class PPORND(TwoValueHeadsBase):
+class PPORND(TwoValueHeadsBaseGeneral):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 
@@ -23,13 +24,9 @@ class PPORND(TwoValueHeadsBase):
         value_loss_coef = getattr(cfg, "value_loss_coef", 0.5)
         max_grad_norm = getattr(cfg, "max_grad_norm", 0.5)
         recurrence = getattr(cfg, "recurrence", 4)
-
         clip_eps = getattr(cfg, "clip_eps", 0.)
         epochs = getattr(cfg, "epochs", 4)
         batch_size = getattr(cfg, "batch_size", 256)
-
-        optimizer = getattr(cfg, "optimizer", "Adam")
-        optimizer_args = getattr(cfg, "optimizer_args", {})
 
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
         preprocess_obss = kwargs.get("preprocess_obss", None)
@@ -37,11 +34,17 @@ class PPORND(TwoValueHeadsBase):
 
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
 
-        self.nminibatches = getattr(cfg, "nminibatches", 4)
+        self.num_minibatch = getattr(cfg, "num_minibatch", 8)
+        self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
+        self.out_dir = getattr(cfg, "out_dir", None)
 
-        super().__init__(
-            envs, acmodel, num_frames_per_proc, discount, gae_lambda, entropy_coef,
-            value_loss_coef, max_grad_norm, recurrence, preprocess_obss, reshape_reward, exp_used_pred)
+        self.save_experience_batch = getattr(cfg, "save_experience_batch", 5)
+
+        envs = ParallelEnv(envs)
+        super().__init__(envs, acmodel, num_frames_per_proc, discount,
+                         gae_lambda, entropy_coef, value_loss_coef,
+                         max_grad_norm, recurrence, preprocess_obss, reshape_reward,
+                         exp_used_pred, intrinsic_reward_fn=self.calculate_intrinsic_reward)
 
         self.clip_eps = clip_eps
         self.epochs = epochs
@@ -51,15 +54,43 @@ class PPORND(TwoValueHeadsBase):
 
         assert self.batch_size % self.recurrence == 0
 
+        # -- Prepare intrinsic generators
+        self.acmodel.random_target.eval()
+        self.predictor_rms = RunningMeanStd()
+        self.predictor_rff = RewardForwardFilter(gamma=self.discount)
+
+        # -- Prepare optimizers
+        self._get_optimizers(cfg, agent_data)
+
+        self.batch_num = 0
+        self.updates_cnt = 0
+
+        # get width and height of the observation space for position normalization
+        self.env_width = envs[0][0].unwrapped.width
+        self.env_height = envs[0][0].unwrapped.height
+
+        # -- Previous batch of experiences last frame
+        self.prev_frame_exps = None
+
+        # -- Init evaluator envs
+
+        # remember some log values from intrinsic rewards computation
+        self.aux_logs = {}
+
+        if self.running_norm_obs:
+            self.collect_random_statistics(50)
+
+    def _get_optimizers(self, cfg, agent_data):
+        optimizer = getattr(cfg, "optimizer", "Adam")
+        optimizer_args = getattr(cfg, "optimizer_args", {})
+
+        self.lr = optimizer_args.lr
+        # -- Prepare optimizers
+
         optimizer_args = vars(optimizer_args)
 
         self.optimizer_policy = getattr(torch.optim, optimizer)(
             self.acmodel.policy_model.parameters(), **optimizer_args)
-
-        # Prepare intrinsic generators
-        self.acmodel.random_target.eval()
-        self.predictor_rms = RunningMeanStd()
-        self.predictor_rff = RewardForwardFilter(gamma=self.discount)
 
         self.optimizer_predictor = getattr(torch.optim, optimizer)(
             self.acmodel.predictor_network.parameters(), **optimizer_args)
@@ -69,29 +100,23 @@ class PPORND(TwoValueHeadsBase):
             self.optimizer_predictor.load_state_dict(agent_data["optimizer_predictor"])
             self.predictor_rms = agent_data["predictor_rms"]  # type: RunningMeanStd
 
-        self.batch_num = 0
-
-        if self.running_norm_obs:
-            self.collect_random_statistics(50)
-
     def update_parameters(self):
         # Collect experiences
 
         exps, logs = self.collect_experiences()
 
-        for epoch_no in range(self.epochs):
-            # Initialize log values
+        # Initialize log values
+        log_entropies = []
+        log_values_ext = []
+        log_values_int = []
+        log_policy_losses = []
+        log_value_ext_losses = []
+        log_value_int_losses = []
+        log_grad_norms = []
 
-            log_entropies = []
-            log_values_ext = []
-            log_values_int = []
-            log_policy_losses = []
-            log_value_ext_losses = []
-            log_value_int_losses = []
-            log_grad_norms = []
-            log_ret_int = []
-            log_rew_int = []
-            for inds in self._get_batches_starting_indexes():
+        for epoch_no in range(self.epochs):
+
+            for inds in self._get_batches_start_idx_v2():
                 # Initialize batch values
 
                 batch_entropy = 0
@@ -101,8 +126,6 @@ class PPORND(TwoValueHeadsBase):
                 batch_value_ext_loss = 0
                 batch_value_int_loss = 0
                 batch_loss = 0
-                batch_ret_int = 0
-                batch_rew_int = 0
 
                 # Initialize memory
 
@@ -154,45 +177,12 @@ class PPORND(TwoValueHeadsBase):
                     batch_value_ext_loss += value_ext_loss.item()
                     batch_value_int_loss += value_int_loss.item()
                     batch_loss += loss
-                    batch_ret_int += sb.returnn_int.mean().item()
-                    batch_rew_int += sb.reward_int.mean().item()
 
                     # Update memories for next epoch
 
                     if self.acmodel.recurrent and i < self.recurrence - 1:
                         exps.memory[inds + i + 1] = memory.detach()
 
-                    # Update Predictor loss
-
-                    # Optimize intrinsic reward generator using only a percentage of experiences
-                    norm_obs = sb.obs.image
-                    obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
-
-                    with torch.no_grad():
-                        target = self.acmodel.random_target(obs)
-
-                    pred = self.acmodel.predictor_network(obs)
-                    diff_pred = (pred - target).pow_(2)
-
-                    # Optimize intrinsic reward generator using only a percentage of experiences
-                    loss_pred = diff_pred.mean(1)
-                    mask = torch.rand(loss_pred.shape[0])
-                    mask = (mask < self.exp_used_pred).type(torch.FloatTensor).to(loss_pred.device)
-                    loss_pred = (loss_pred * mask).sum() / torch.max(mask.sum(),
-                                                                     torch.Tensor([1]).to(
-                                                                         loss_pred.device))
-
-                    self.optimizer_predictor.zero_grad()
-                    loss_pred.backward()
-                    grad_norm = sum(
-                        p.grad.data.norm(2).item() ** 2 for p in
-                        self.acmodel.predictor_network.parameters()
-                        if p.grad is not None
-                    ) ** 0.5
-
-                    torch.nn.utils.clip_grad_norm_(self.acmodel.predictor_network.parameters(),
-                                                   self.max_grad_norm)
-                    self.optimizer_predictor.step()
 
                 # Update batch values
 
@@ -203,8 +193,6 @@ class PPORND(TwoValueHeadsBase):
                 batch_value_ext_loss /= self.recurrence
                 batch_value_int_loss /= self.recurrence
                 batch_loss /= self.recurrence
-                batch_rew_int /= self.recurrence
-                batch_ret_int /= self.recurrence
 
                 # Update actor-critic
 
@@ -227,47 +215,64 @@ class PPORND(TwoValueHeadsBase):
                 log_value_ext_losses.append(batch_value_ext_loss)
                 log_value_int_losses.append(batch_value_int_loss)
                 log_grad_norms.append(grad_norm)
-                log_ret_int.append(batch_ret_int)
-                log_rew_int.append((batch_rew_int))
 
         # Log some values
-
-        logs["entropy"] = numpy.mean(log_entropies)
-        logs["value_ext"] = numpy.mean(log_values_ext)
-        logs["value_int"] = numpy.mean(log_values_int)
+        logs["entropy"] = np.mean(log_entropies)
+        logs["value_ext"] = np.mean(log_values_ext)
+        logs["value_int"] = np.mean(log_values_int)
         logs["value"] = logs["value_ext"] + logs["value_int"]
-        logs["policy_loss"] = numpy.mean(log_policy_losses)
-        logs["value_ext_loss"] = numpy.mean(log_value_ext_losses)
-        logs["value_int_loss"] = numpy.mean(log_value_int_losses)
+        logs["policy_loss"] = np.mean(log_policy_losses)
+        logs["value_ext_loss"] = np.mean(log_value_ext_losses)
+        logs["value_int_loss"] = np.mean(log_value_int_losses)
         logs["value_loss"] = logs["value_int_loss"] + logs["value_ext_loss"]
-        logs["grad_norm"] = numpy.mean(log_grad_norms)
-        logs["return_int"] = numpy.mean(log_ret_int)
-        logs["reward_int"] = numpy.mean(log_rew_int)
+        logs["grad_norm"] = np.mean(log_grad_norms)
+
+        # add extra logs from intrinsic rewards
+        for k in self.aux_logs:
+            logs[k] = self.aux_logs[k]
 
         return logs
 
-    def _get_batches_starting_indexes(self):
+    def _get_batches_start_idx_v2(self, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
-
-        First, the indexes are the integers from 0 to `self.num_frames` with a step of
-        `self.recurrence`, shifted by `self.recurrence//2` one time in two for having
-        more diverse batches. Then, the indexes are splited into the different batches.
 
         Returns
         -------
         batches_starting_indexes : list of list of int
             the indexes of the experiences to be used at first for each batch
+
         """
+        num_frames_per_proc = self.num_frames_per_proc
+        num_procs = self.num_procs
+        num_minibatch = self.num_minibatch
 
-        indexes = numpy.arange(0, self.num_frames, self.recurrence)
-        indexes = numpy.random.permutation(indexes)
+        if recurrence is None:
+            recurrence = self.recurrence
 
-        # Shift starting indexes by self.recurrence//2 half the time
-        self.batch_num += 1
+        #  --Matrix of size (num_minibatches, num_processes) witch contains the first frame index
+        #  --for each process (0 for proc1, 128 for proc2 ....)
+        proc_frames_start_idx = np.tile(
+            np.arange(0, self.num_frames, num_frames_per_proc), (num_minibatch, 1))
+        #  -- Starting index for each proc
+        proc_first_idx = np.random.randint(0, recurrence, size=(num_minibatch, num_procs))
 
-        num_indexes = self.batch_size // self.recurrence
-        batches_starting_indexes = [indexes[i:i+num_indexes] for i in range(0, len(indexes), num_indexes)]
+        nr_batches_per_proc = (num_frames_per_proc // recurrence) - 1
+        if nr_batches_per_proc < 1:
+            raise ValueError("Recurrence bigger than rollout")
+
+        #  -- First obs that can be used from each process rollout
+        proc_batch_start_idx = proc_frames_start_idx + proc_first_idx
+
+        batches_indexes = np.concatenate(
+            [proc_batch_start_idx + recurrence * i for i in range(nr_batches_per_proc)],
+            axis=1)
+
+        batch_size = min(len(batches_indexes[0]), self.batch_size)
+        batches_starting_indexes = [
+                np.random.choice(
+                    np.random.permutation(batches_indexes[i]),
+                    batch_size, replace=False) for i in range(num_minibatch)]
 
         return batches_starting_indexes
 
@@ -278,96 +283,164 @@ class PPORND(TwoValueHeadsBase):
             "predictor_rms": self.predictor_rms,
         })
 
-    def collect_random_statistics(self, num_timesteps):
-        #  initialize observation normalization with data from random agent
-
-        self.obs_rms = RunningMeanStd(shape=(1, 7, 7, 3))
-
-        curr_obs = self.obs
-        collected_obss = [None] * (self.num_frames_per_proc * num_timesteps)
-        for i in range(self.num_frames_per_proc * num_timesteps):
-            # Do one agent-environment interaction
-
-            action = torch.randint(0, self.env.action_space.n, (self.num_procs,))  # sample uniform actions
-            obs, reward, done, _ = self.env.step(action.cpu().numpy())
-
-            # Update experiences values
-            collected_obss[i] = curr_obs
-            curr_obs = obs
-
-        self.obs = curr_obs
-        exps = DictList()
-        exps.obs = [collected_obss[i][j]
-                    for j in range(self.num_procs)
-                    for i in range(self.num_frames_per_proc * num_timesteps)]
-
-        images = [obs["image"] for obs in exps.obs]
-        images = numpy.array(images)
-        images = torch.tensor(images, dtype=torch.float)
-
-        self.obs_rms.update(images)
-
     def calculate_intrinsic_reward(self, exps: DictList, dst_intrinsic_r: torch.Tensor):
 
-        """
-        replicate (should normalize by a running mean):
-            X_r -- random target
-            X_r_hat -- predictor
+        target_network = self.acmodel.random_target
+        predictor_network = self.acmodel.predictor_network
+        num_procs = self.num_procs
+        num_frames_per_proc = self.num_frames_per_proc
+        device = self.device
+        epochs_no = self.epochs
 
-            self.feat_var = tf.reduce_mean(tf.nn.moments(X_r, axes=[0])[1])
-            self.max_feat = tf.reduce_max(tf.abs(X_r))
-            self.int_rew = tf.reduce_mean(tf.square(tf.stop_gradient(X_r) - X_r_hat), axis=-1, keep_dims=True)
-            self.int_rew = tf.reshape(self.int_rew, (self.sy_nenvs, self.sy_nsteps - 1))
+        #  Get observations and full states
+        f, prev_frame_exps = self.augment_exp(exps, predictor_network)
 
-            targets = tf.stop_gradient(X_r)
-            # self.aux_loss = tf.reduce_mean(tf.square(noisy_targets-X_r_hat))
-            self.aux_loss = tf.reduce_mean(tf.square(targets - X_r_hat), -1)
-            mask = tf.random_uniform(shape=tf.shape(self.aux_loss), minval=0., maxval=1., dtype=tf.float32)
-            mask = tf.cast(mask < self.proportion_of_exp_used_for_predictor_update, tf.float32)
-            self.aux_loss = tf.reduce_sum(mask * self.aux_loss) / tf.maximum(tf.reduce_sum(mask), 1.)
+        #  Compute Intrinsic rewards
+        predicted_embeddings = torch.zeros(num_frames_per_proc,
+                                          num_procs,
+                                          predictor_network.embedding_size,
+                                          device=device)
+        predictor_network.eval()
+        for i in range(num_frames_per_proc):
+            cur_obs = f.obs_image[i]
 
-        """
-        if self.running_norm_obs:
-            obs = exps.obs.image * 15.0  # horrible harcoded normalized factor
-            # normalize the observations for predictor and target networks
-            norm_obs = torch.clamp(
-                torch.div(
-                    (obs - self.obs_rms.mean.to(exps.obs.image.device)),
-                    torch.sqrt(self.obs_rms.var).to(exps.obs.image.device)),
-                -5.0, 5.0)
+            with torch.no_grad():
+                f.agworld_embs[i] = target_network(cur_obs).detach()
+                predicted_embeddings[i] = predictor_network(cur_obs).detach()
 
-            self.obs_rms.update(obs.cpu())  # update running mean
-        else:
-            # Without norm
-            norm_obs = exps.obs.image
+        predictor_network.train()
 
-        obs = torch.transpose(torch.transpose(norm_obs, 1, 3), 2, 3)
-
-        with torch.no_grad():
-            target = self.acmodel.random_target(obs)
-            pred = self.acmodel.predictor_network(obs)
-
-        diff_pred = (pred - target).pow_(2)
-
-        # -- Calculate intrinsic & Normalize intrinsic rewards
-        int_rew = diff_pred.detach().mean(1)
-        # TODO BIG BIG BUG previously  - :( int_rew  is (self.num_procs, self.num_frames_per_proc,)
-        # TODO this should fix it but should double check
-        int_rew = int_rew.view((self.num_procs, self.num_frames_per_proc)).transpose(0, 1)
-
-        dst_intrinsic_r.copy_(int_rew)
-
+        dst_intrinsic_r = (predicted_embeddings - f.agworld_embs).pow_(2).mean(-1).detach()
         # Normalize intrinsic reward
         self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
-
         for i in reversed(range(self.num_frames_per_proc)):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
 
         self.predictor_rms.update(int_rff.view(-1))
-        # dst_intrinsic_r.sub_(self.predictor_rms.mean.to(dst_intrinsic_r.device))
         dst_intrinsic_r.div_(torch.sqrt(self.predictor_rms.var).to(dst_intrinsic_r.device))
 
+        # -- Log info about intrinisc rewards distribution per action type
+        self.log_intrinsic_reward_info(dst_intrinsic_r, f.action)
 
+        # ----------------------------------------------------------------------------------
+        # -- Optimize RND
 
+        optimizer_predictor = self.optimizer_predictor
+        max_grad_norm = self.max_grad_norm
+
+        # _________ for all tensors below, T x P -> P x T -> P * T _______________________
+        f = self.flip_back_experience(f)
+        # ------------------------------------------------------------------------------------------
+
+        loss_m_state = torch.nn.MSELoss(reduction='none')
+        log_state_loss = []
+        log_grad_agworld_norm = []
+
+        for epoch_no in range(epochs_no):
+            for inds in self._get_batches_start_idx_v2(recurrence=1):
+                obs = f.obs_image[inds].detach()
+                crt_actions = f.action[inds].long().detach()
+                crt_actions_one = f.actions_onehot[inds].detach()
+
+                crt_target_embs = f.agworld_embs[inds].detach()
+                crt_predicted_embs = predictor_network(obs)
+
+                state_batch_loss = loss_m_state(crt_predicted_embs, crt_target_embs).mean(-1)
+
+                # Optimize intrinsic reward generator using only a percentage of experiences
+                mask = torch.rand(state_batch_loss.shape[0])
+                mask = (mask < self.exp_used_pred).type(torch.float).to(device)
+
+                loss_rnd = (state_batch_loss * mask).sum() / torch.max(mask.sum(), torch.ones(1).to(device))
+                log_state_loss.append(loss_rnd.cpu().item())
+                # ======================================================================================
+                # Do backpropagation and optimization steps
+
+                optimizer_predictor.zero_grad()
+
+                loss_rnd.backward()
+                grad_norm = sum(
+                    p.grad.data.norm(2).item() ** 2 for p in predictor_network.parameters()
+                    if p.grad is not None
+                ) ** 0.5
+                log_grad_agworld_norm.append(grad_norm)
+                torch.nn.utils.clip_grad_norm_(predictor_network.parameters(), max_grad_norm)
+                optimizer_predictor.step()
+
+        # ------------------------------------------------------------------------------------------
+        # Log some values
+        self.aux_logs['state_loss'] = np.mean(log_state_loss)
+        self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
+
+        return dst_intrinsic_r
+
+    def add_extra_experience(self, exps: DictList):
+        # Process
+        if "position" in self.obss[0][0].keys():
+            full_positions = [self.obss[i][j]["position"]
+                              for j in range(self.num_procs)
+                              for i in range(self.num_frames_per_proc)]
+
+            max_pos_value = max(self.env_height, self.env_width)
+            exps.position = preprocess_images(full_positions,
+                                              device=self.device,
+                                              max_image_value=max_pos_value,
+                                              normalize=False)
+        # Process
+        if "state" in self.obss[0][0].keys():
+            full_states = [self.obss[i][j]["state"]
+                           for j in range(self.num_procs)
+                           for i in range(self.num_frames_per_proc)]
+
+            exps.states = preprocess_images(full_states, device=self.device)
+
+        exps.obs_image = exps.obs.image
+
+    def log_intrinsic_reward_info(self, intrinsic_rewards, actions):
+
+        self.aux_logs["mean_intrinsic_rewards"] = np.mean(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["min_intrinsic_rewards"] = np.min(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["max_intrinsic_rewards"] = np.max(intrinsic_rewards.cpu().numpy())
+        self.aux_logs["var_intrinsic_rewards"] = np.var(intrinsic_rewards.cpu().numpy())
+
+        # -- MOVE FORWARD INTRINSIC REWARDS
+        int_r = intrinsic_rewards[actions == ActionNames.MOVE_FORWARD].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtype=np.float32)
+
+        self.aux_logs["move_forward_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["move_forward_var_int_r"] = np.var(int_r)
+        self.aux_logs["move_forward_max_int_r"] = np.max(int_r)
+        self.aux_logs["move_forward_min_int_r"] = np.min(int_r)
+
+        # -- TURNING INTRINSIC REWARDS
+        int_r = intrinsic_rewards[(actions == ActionNames.TURN_LEFT) | (actions == ActionNames.TURN_RIGHT)].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtype=np.float32)
+
+        self.aux_logs["turn_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["turn_var_int_r"] = np.var(int_r)
+        self.aux_logs["turn_max_int_r"] = np.max(int_r)
+        self.aux_logs["turn_min_int_r"] = np.min(int_r)
+
+        # -- OBJECT PICKING UP / DROPPING INTRINSIC REWARDS
+        int_r = intrinsic_rewards[(actions == ActionNames.PICK_UP) | (actions == ActionNames.DROP)].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtype=np.float32)
+
+        self.aux_logs["obj_interactions_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["obj_interactions_var_int_r"] = np.var(int_r)
+        self.aux_logs["obj_interactions_max_int_r"] = np.max(int_r)
+        self.aux_logs["obj_interactions_min_int_r"] = np.min(int_r)
+
+        # -- OBJECT TOGGLE (OPEN DOORS, BREAKING BOXES)
+        int_r = intrinsic_rewards[actions == ActionNames.INTERACT].cpu().numpy()
+        if len(int_r) == 0:
+            int_r = np.array([0], dtype=np.float32)
+
+        self.aux_logs["obj_toggle_mean_int_r"] = np.mean(int_r)
+        self.aux_logs["obj_toggle_var_int_r"] = np.var(int_r)
+        self.aux_logs["obj_toggle_max_int_r"] = np.max(int_r)
+        self.aux_logs["obj_toggle_min_int_r"] = np.min(int_r)
 

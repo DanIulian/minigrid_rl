@@ -32,13 +32,11 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         exp_used_pred = getattr(cfg, "exp_used_pred", 0.25)
         preprocess_obss = kwargs.get("preprocess_obss", None)
         reshape_reward = kwargs.get("reshape_reward", None)
-        eval_envs = kwargs.get("eval_envs", [])
 
         self.num_minibatch = getattr(cfg, "num_minibatch", 8)
         self.icm_beta_coeff = getattr(cfg, "beta_coeff", 0.2)
         self.recurrence_worlds = getattr(cfg, "recurrence_worlds", 16)
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
-        self.nminibatches = getattr(cfg, "nminibatches", 4)
         self.out_dir = getattr(cfg, "out_dir", None)
         self.pre_fill_memories  = getattr(cfg, "pre_fill_memories", 1)
 
@@ -389,7 +387,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         dst_intrinsic_r = (pred_next_state[1:] - next_state[1:]).detach().pow(2).sum(2)
 
         # --Normalize intrinsic reward
-        #self.predictor_rff.reset() # do you have to rest it every time ???
+        self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
 
         for i in reversed(range(self.num_frames_per_proc)):
@@ -417,12 +415,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         loss_m_act = torch.nn.CrossEntropyLoss()
 
         log_state_loss = []
-        log_state_loss_same = []
-        log_state_loss_diffs = []
-
         log_act_loss = []
-        log_act_loss_same = []
-        log_act_loss_diffs = []
 
         for inds in self._get_batches_starting_indexes(recurrence=recurrence_worlds, padding=1):
 
@@ -431,13 +424,7 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
             new_agworld_mem = [None] * recurrence_worlds
 
             state_batch_loss = torch.zeros(1, device=self.device)[0]
-
-            state_batch_loss_same = torch.zeros(1, device=self.device)[0]
-            state_batch_loss_diffs = torch.zeros(1, device=self.device)[0]
-
             act_batch_loss = torch.zeros(1, device=self.device)[0]
-            act_batch_loss_same = torch.zeros(1, device=self.device)[0]
-            act_batch_loss_diff = torch.zeros(1, device=self.device)[0]
 
             log_grad_agworld_norm = []
 
@@ -460,11 +447,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                 obs = f.obs_image[inds + i].detach()
                 next_obs = f.obs_image[inds + i + 1].detach()
 
-                # take masks and convert them to 1D tensor for indexing
-                # use next masks because done gives you the new game obs
-                next_mask = f.mask[inds + i + 1].long().detach()
-                next_mask = next_mask.squeeze(1).type(torch.ByteTensor)
-
                 crt_actions = f.action[inds + i].long().detach()
                 crt_actions_one = f.actions_onehot[inds + i].detach()
 
@@ -475,46 +457,10 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
                 act_batch_loss += loss_m_act(pred_act, crt_actions)
                 state_batch_loss += loss_m_state(pred_state, new_agworld_mem[i + 1].detach())
 
-                # if all episodes ends at once, can't compute same/diff losses
-                if next_mask.sum() == 0:
-                    continue
-
-                next_mask_as_bool = next_mask.to(torch.bool)
-                same = (obs[next_mask_as_bool] == next_obs[next_mask_as_bool]).all(1).all(1).all(1)
-
-                s_pred_act = pred_act[next_mask_as_bool]
-                s_crt_act = crt_actions[next_mask_as_bool]
-
-                s_pred_state = pred_state[next_mask_as_bool]
-                s_crt_state = (new_agworld_mem[i + 1].detach())[next_mask_as_bool]
-
-                # if all are same/diff take care to empty tensors
-                if same.sum() == same.shape[0]:
-                    act_batch_loss_same += loss_m_act(s_pred_act[same], s_crt_act[same])
-                    state_batch_loss_same += loss_m_state(s_pred_state[same], s_crt_state[same])
-
-                elif same.sum() == 0:
-                    act_batch_loss_diff += loss_m_act(s_pred_act[~same], s_crt_act[~same])
-                    state_batch_loss_diffs += loss_m_state(s_pred_state[~same], s_crt_state[~same])
-
-                else:
-                    act_batch_loss_same += loss_m_act(s_pred_act[same], s_crt_act[same])
-                    act_batch_loss_diff += loss_m_act(s_pred_act[~same], s_crt_act[~same])
-
-                    state_batch_loss_same += loss_m_state(s_pred_state[same], s_crt_state[same])
-                    state_batch_loss_diffs += loss_m_state(s_pred_state[~same], s_crt_state[~same])
-
             # -- Optimize models
             act_batch_loss /= (recurrence_worlds - 1)
             state_batch_loss /= (recurrence_worlds - 1)
-
-            act_batch_loss_same /= (recurrence_worlds - 1)
-            act_batch_loss_diff /= (recurrence_worlds - 1)
-
-            state_batch_loss_same /= (recurrence_worlds - 1)
-            state_batch_loss_diffs /= (recurrence_worlds - 1)
-
-            ag_loss = (1 - beta) * act_batch_loss + beta * state_batch_loss
+            ag_loss = beta * act_batch_loss + (1 - beta) * state_batch_loss
 
             optimizer_agworld.zero_grad()
             ag_loss.backward()
@@ -532,12 +478,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
 
             log_grad_agworld_norm.append(grad_agworld_norm)
 
-            log_act_loss_diffs.append(act_batch_loss_diff.item())
-            log_act_loss_same.append(act_batch_loss_same.item())
-
-            log_state_loss_same.append(state_batch_loss_same.item())
-            log_state_loss_diffs.append(state_batch_loss_diffs.item())
-
             optimizer_agworld.step()
 
         # ------------------------------------------------------------------------------------------
@@ -545,12 +485,6 @@ class PPOIcm(TwoValueHeadsBaseGeneral):
         self.aux_logs['next_state_loss'] = np.mean(log_state_loss)
         self.aux_logs['next_action_loss'] = np.mean(log_act_loss)
         self.aux_logs['grad_norm_icm'] = np.mean(log_grad_agworld_norm)
-
-        self.aux_logs['next_state_loss_same'] = np.mean(log_state_loss_same)
-        self.aux_logs['next_state_loss_diffs'] = np.mean(log_state_loss_diffs)
-
-        self.aux_logs['next_act_loss_same'] = np.mean(log_act_loss_same)
-        self.aux_logs['next_act_loss_diffs'] = np.mean(log_act_loss_diffs)
 
         return dst_intrinsic_r
 

@@ -9,7 +9,7 @@ from . import model_icm_simple
 from . import model_never_give_up
 
 MODELS = {
-    "RNDModel": model_rnd_like.RNDModels,
+    "RNDModel": model_rnd_like.RNDModel,
     "Model": model_replica.Model,
     "WorldsModels": model_worlds.WorldsModels,
     "ICMModel": model_icm_like.ICMModel,

@@ -375,6 +375,8 @@ def plot_experiments(experiments_path,
                     plt.ylabel("Percentage of discovered states", fontsize=18)
                 elif plot_f == "unique_states":
                     plt.ylabel("Number of uniques states visited", fontsize=18)
+                elif plot_f == "rreturn_mean":
+                    plt.ylabel("Mean episodic return", fontsize=18)
                 else:
                     plt.ylabel(plot_f, fontsize=18)
                 plt.yticks(fontsize=18)
@@ -388,7 +390,7 @@ def plot_experiments(experiments_path,
 
             # Set the title
             if title is None:
-                plt.title(exp_gdf.iloc[0].title[9:-3], fontsize=24)
+                plt.title(experiment_name, fontsize=24)
             else:
                 plt.title(title, fontsize=24)
 

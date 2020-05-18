@@ -1,5 +1,5 @@
 """
-    DanM 2019
+    DanM 2020
     inspired from https://github.com/lcswillems/torch-rl
 """
 import numpy as np
@@ -12,8 +12,6 @@ from torch_rl.utils import DictList
 from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from torch_rl.utils import ParallelEnv
-from agents.eval_agent import EvalAgent
-
 
 class PPODisagreement(TwoValueHeadsBaseGeneral):
     """The class for the Proximal Policy Optimization algorithm
@@ -36,7 +34,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         reshape_reward = kwargs.get("reshape_reward", None)
 
         self.running_norm_obs = getattr(cfg, "running_norm_obs", False)
-        self.nminibatches = getattr(cfg, "nminibatches", 4)
+        self.num_minibatch = getattr(cfg, "num_minibatch", 8)
         self.out_dir = getattr(cfg, "out_dir", None)
         self.pre_fill_memories = getattr(cfg, "pre_fill_memories", 1)
 
@@ -54,8 +52,8 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.ext_coeff = cfg.ext_coeff
 
         # Intrinsic reward parameters
-        self.dyn_batch_size = getattr(cfg, "disagreement_batch_size", 64)
-        self.dyn_nr_epochs = getattr(cfg, "disagreement_nr_epochs", 3)
+        self.dyn_batch_size = getattr(cfg, "disagreement_batch_size", 128)
+        self.dyn_nr_epochs = getattr(cfg, "disagreement_nr_epochs", 4)
 
         assert self.batch_size % self.recurrence == 0
 
@@ -77,17 +75,6 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         self.prev_frame_exps = None
 
         # Eval envs
-        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
-        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
-        self.eval_agent = EvalAgent(envs,
-                                    acmodel.policy_model,
-                                    None,
-                                    self.preprocess_obss,
-                                    self.out_dir,
-                                    eval_agent_nr_steps,
-                                    eval_nr_runs)
-
-
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
 
@@ -109,7 +96,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
         self.optimizer_dyn = [getattr(torch.optim, optimizer)(
             dyn_model.parameters(), **optimizer_args)
-            for dyn_model in self.module.dyn_list]
+            for dyn_model in self.acmodel.dyn_list]
 
         if "optimizer_policy" in agent_data:
             self.optimizer_policy.load_state_dict(agent_data["optimizer_policy"])
@@ -124,9 +111,6 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
         # Collect experiences
         exps, logs = self.collect_experiences()
-
-        # Eval progress
-        self.eval_agent.on_new_observation() # this happens every 2048 frames
 
         # Initialize log values
         log_entropies = []
@@ -167,7 +151,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
                     # Compute loss
 
                     if self.is_recurrent:
-                        dist, vvalue, memory = self.acmodelpolicy_model(sb.obs, memory * sb.mask)
+                        dist, vvalue, memory = self.acmodel.policy_model(sb.obs, memory * sb.mask)
                     else:
                         dist, vvalue = self.acmodel.policy_model(sb.obs)
 
@@ -273,41 +257,18 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
     def _get_batches_starting_indexes(self, batch_size=None, recurrence=None, padding=0):
         """Gives, for each batch, the indexes of the observations given to
         the model and the experiences used to compute the loss at first.
-
-        First, the indexes are the integers from 0 to `self.num_frames` with a step of
-        `self.recurrence`, shifted by `self.recurrence//2` one time in two for having
-        more diverse batches. Then, the indexes are splited into the different batches.
-
-        Returns
-        -------
-        batches_starting_indexes : list of list of int
-            the indexes of the experiences to be used at first for each batch
-
         """
         num_frames_per_proc = self.num_frames_per_proc
         num_procs = self.num_procs
 
-        if recurrence is None:
-            recurrence = self.recurrence
-
-        if batch_size is None:
-            batch_size = self.batch_size
-
         # Consider Num frames list ordered P * T
-        if padding == 0:
-            indexes = np.arange(0, self.num_frames, recurrence)
-        else:
-            # Consider Num frames list ordered P * T
-            # Do not index step[:padding] and step[-padding:]
-            frame_index = np.arange(padding, num_frames_per_proc-padding+1-recurrence, recurrence)
-            indexes = np.resize(frame_index.reshape((1, -1)), (num_procs, len(frame_index)))
-            indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
-            indexes = indexes.reshape(-1)
+        # Do not index step[:padding] and step[-padding:]
+        frame_index = np.arange(padding, num_frames_per_proc-padding+1-recurrence, recurrence)
+        indexes = np.resize(frame_index.reshape((1, -1)), (num_procs, len(frame_index)))
+        indexes = indexes + np.arange(0, num_procs).reshape(-1, 1) * num_frames_per_proc
+        indexes = indexes.reshape(-1)
 
         indexes = np.random.permutation(indexes)
-
-        # Shift starting indexes by recurrence//2 half the time
-        self.batch_num += 1
 
         num_indexes = batch_size // recurrence
         batches_starting_indexes = [
@@ -359,7 +320,6 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
         return batches_starting_indexes
 
-
     def get_save_data(self):
         return dict({
             "optimizer_policy": self.optimizer_policy.state_dict(),
@@ -370,8 +330,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
     def calculate_int_reward_rand(self, exps: DictList, dst_intrinsic_r: torch.FloatTensor):
 
-        # Run worlds models & generate memories
-
+        # Run worlds models
         feature_ext_network = self.acmodel.feature_extractor
         dyn_list = self.acmodel.dyn_list
 
@@ -388,7 +347,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         # ------------------------------------------------------------------------------------------
         # -- Compute Intrinsic rewards
 
-        pred_next_state = torch.zeros(num_frames_per_proc + 1,
+        pred_next_state = torch.zeros(num_frames_per_proc,
                                       num_procs,
                                       len(dyn_list),
                                       feature_ext_network.embedding_size,
@@ -413,7 +372,7 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
         dst_intrinsic_r = pred_next_state.var(dim=2).mean(dim=-1).detach()
 
         # --Normalize intrinsic reward
-        #self.predictor_rff.reset()
+        self.predictor_rff.reset()
         int_rff = torch.zeros((self.num_frames_per_proc, self.num_procs), device=self.device)
         for i in reversed(range(self.num_frames_per_proc)):
             int_rff[i] = self.predictor_rff.update(dst_intrinsic_r[i])
@@ -426,7 +385,6 @@ class PPODisagreement(TwoValueHeadsBaseGeneral):
 
         # ------------------------------------------------------------------------------------------
         # -- Optimize Dynamics
-        optimizer_dyn = self.optimizer_dyn
         max_grad_norm = self.max_grad_norm
 
         # _________ for all tensors below, T x P -> P x T -> P * T _______________________

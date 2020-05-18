@@ -43,15 +43,15 @@ class RandomFeatureExtractor(nn.Module):
         s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
 
         self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 16, k_sizes[0], s_sizes[0]),
-            nn.BatchNorm2d(16),
-            nn.LeakyReLU(inplace=True),
-
-            nn.Conv2d(16, 32, k_sizes[1], s_sizes[1]),
+            nn.Conv2d(3, 32, k_sizes[0], s_sizes[0]),
             nn.BatchNorm2d(32),
             nn.LeakyReLU(inplace=True),
 
-            nn.Conv2d(32, 64, k_sizes[2], s_sizes[2]),
+            nn.Conv2d(32, 64, k_sizes[1], s_sizes[1]),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(inplace=True),
+
+            nn.Conv2d(64, 64, k_sizes[2], s_sizes[2]),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(inplace=True),
         )
@@ -64,7 +64,7 @@ class RandomFeatureExtractor(nn.Module):
         # Consider embedding out of fc1
         self.fc1 = nn.Sequential(
             nn.Linear(self._image_embedding_size, self._embedding_size),
-            nn.ReLU(inplace=True)
+            nn.LeakyReLU(inplace=True)
         )
 
         self.apply(initialize_parameters2)
