@@ -1,0 +1,10 @@
+main:
+  env: ["MiniGrid-Empty-8x8-v0", "MiniGrid-Empty-16x16-v0",
+        "MiniGrid-DoorKey-6x6-v0", "MiniGrid-DoorKey-8x8-v0",
+        "MiniGrid-MultiRoom-N2-S4-v0", "MiniGrid-MultiRoom-N4-S5-v0",
+        "MiniGrid-KeyCorridorS3R2-v0", "MiniGrid-KeyCorridorS3R3-v0",
+        "MiniGrid-LavaCrossingS9N1-v0", "MiniGrid-DoorKey-5x5-v0",
+        "MiniGrid-ObstructedMaze-1Dl-v0", "MiniGrid-ObstructedMaze-1Dlh-v0",
+  ]
+
+
