@@ -1,12 +1,12 @@
 main:
-  env: MiniGrid-MultiRoom-N6-v0 # required=True, help="name of the environment to train on (REQUIRED)")
+  env: MiniGrid-DoorKey-8x8-v0 # required=True, help="name of the environment to train on (REQUIRED)")
   seed: 0 # type=int, default=1, help="random seed (default: 1)")
   procs: 16 # type=int, default=16, help="number of processes (default: 16)") # number of envs
-  actual_procs: 6 # type=int, default=16, help="number of processes (default: 16)")
+  actual_procs: 4 # type=int, default=16, help="number of processes (default: 16)")
   frames: 2.e+6 # type=int, default=10**7, help="number of frames of training (default: 10e7)")
   log_interval: 1 # type=int, default=1, help="number of updates between two logs (default: 1)")
   eval_interval: 10
-  save_interval: 0 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
+  save_interval: 500 # type=int, default=0, help="number of updates between two saves (default: 0, 0 means no saving)")
   tb: false # action="store_true", default=False, help="log into Tensorboard")
   text: &text false # action="store_true", default=False, help="add a GRU to the model to handle text  input")
 
@@ -15,7 +15,7 @@ main:
   save_all: true
 
 env_cfg:
-  max_episode_steps: 200 # environment steps
+  max_episode_steps: 400 # environment steps
   max_image_value: 15.
   obs_type: compact
   normalize: true
@@ -42,9 +42,9 @@ agent:
   recurrence: &recurrence 4 # type=int, default=1, help="number of timesteps gradient is
   # backpropagated (default: 1)\nIf > 1, a LSTM is added to the model to have memory")
   min_mem: &min_mem 0  # If min number of recurrence to use mem
-  int_coeff: 0.2
+  int_coeff: 0.25
   ext_coeff: 1.
-  beta_coeff: 0.2
+  beta_coeff: 0.8
   exp_used_pred: 0.25 # #type=float, default=0.25, help="proportion of experience used for training predictor
 
 model:
