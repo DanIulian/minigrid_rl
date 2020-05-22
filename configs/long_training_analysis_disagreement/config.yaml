@@ -1,0 +1,5 @@
+main:
+  env: ["MiniGrid-MultiRoom-N6-v0", "MiniGrid-MultiRoom-N7-S7-v0",
+        "MiniGrid-KeyCorridorS4R3-v0", "MiniGrid-KeyCorridorS5R3-v0",
+        "MiniGrid-ObstructedMaze-2Dl-v0", "MiniGrid-ObstructedMaze-2Dlh-v0"
+  ]
