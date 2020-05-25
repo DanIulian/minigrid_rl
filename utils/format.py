@@ -24,8 +24,38 @@ def get_obss_preprocessor(*args, type=None, **kwargs):
         return get_obss_preprocessor_tensor(*args, **kwargs)
     elif type == "aux_in":
         return get_obss_preprocessor_aux_in(*args, **kwargs)
+    elif type == "carrying":
+        return get_obss_preprocessor_carrying(*args, **kwargs)
     else:
         raise NotImplemented
+
+
+def get_obss_preprocessor_carrying(env_id, obs_space, model_dir, max_image_value=15., normalize=True,
+                                   permute=False, obs_type="compact"):
+
+    if obs_type == "compact":
+        preprocess_images_fn = preprocess_images
+    elif obs_type == "rgb":
+        preprocess_images_fn = preprocess_rgb_images
+    else:
+        raise ValueError("Wrong observation type")
+
+    # Check if it is a MiniGrid environment
+    if re.match("MiniGrid-.*", env_id):
+        obs_space = {"image": obs_space.spaces['image'].shape, "text": 100, "carrying": 18}
+
+        vocab = Vocabulary(model_dir, obs_space["text"])
+
+        def preprocess_obss(obss, device=None, permute=permute):
+            return torch_rl.DictList({
+                "image": preprocess_images_fn([obs["image"] for obs in obss], device=device,
+                                              max_image_value=max_image_value, normalize=normalize),
+                "carrying": preprocess_images([obs["carrying"] for obs in obss], device=device,
+                                              max_image_value=1., normalize=False)
+            })
+        preprocess_obss.vocab = vocab
+
+    return obs_space, preprocess_obss
 
 
 def get_obss_preprocessor_cond(env_id, obs_space, model_dir, max_image_value=15., normalize=True,

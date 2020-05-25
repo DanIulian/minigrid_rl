@@ -101,11 +101,64 @@ def state_visitation_hash(env):
     return StateVisitationHash(env)
 
 
+def include_carrying(env):
+    return RecordCarrying(env)
+
+
+class RecordCarrying(gym.core.Wrapper):
+    """
+    Embed into the observation the position of the agent
+    on the map
+    """
+    def __init__(self, env):
+        super().__init__(env)
+
+        self._obj_to_idx = {
+            'key': 0,
+            'ball': 1,
+            'box': 2,
+        }
+        self.one_hot_encoding_size = 18
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+
+        observation["carrying"] = np.zeros(self.one_hot_encoding_size)
+        if self.env.unwrapped.carrying:
+            obj_type = self.env.unwrapped.carrying.type
+            obj_color = self.env.unwrapped.carrying.color
+            idx = self._obj_to_idx[obj_type] * len(list(COLOR_TO_IDX.values())) + COLOR_TO_IDX[
+                obj_color]
+            observation["carrying"][idx] = 1.0
+
+        return observation, reward, done, info
+
+    def reset(self, **kwargs):
+        observation = self.env.reset(**kwargs)
+
+        observation["carrying"] = np.zeros(self.one_hot_encoding_size)
+        if self.env.unwrapped.carrying:
+            obj_type = self.env.unwrapped.carrying.type
+            obj_color = self.env.unwrapped.carrying.color
+            idx = self._obj_to_idx[obj_type] * len(list(COLOR_TO_IDX.values())) + COLOR_TO_IDX[obj_color]
+            observation["carrying"][idx] = 1.0
+
+        return observation
+
+    def seed(self, seed=None):
+        self.env.seed(seed=seed)
+
+
 class StateVisitationPositionDirection(Wrapper):
 
     def __init__(self, env):
         super().__init__(env)
         self.unique_states = {}
+        self._obj_to_idx = {
+            'key': 0,
+            'ball': 1,
+            'box': 2,
+        }
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
@@ -148,6 +201,11 @@ class StateVisitationHash(Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.unique_states = {}
+        self._obj_to_idx = {
+            'key': 0,
+            'ball': 1,
+            'box': 2,
+        }
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
@@ -167,7 +225,13 @@ class StateVisitationHash(Wrapper):
 
     def _hash_state(self, observation):
 
-        state = hash(observation['image'].tostring())
+        carrying = 0
+        if self.env.unwrapped.carrying:
+            obj_type = self.env.unwrapped.carrying.type
+            obj_color = self.env.unwrapped.carrying.color
+            carrying = self._obj_to_idx[obj_type] * len(list(COLOR_TO_IDX.values())) + COLOR_TO_IDX[obj_color] + 1
+
+        state = hash(observation['image'].tostring() + bytes(carrying))
 
         if state not in self.unique_states:
             self.unique_states[state] = 0
@@ -1090,6 +1154,8 @@ class ActionBonus(gym.core.Wrapper):
         self.counts = {}
         return self.env.reset(**kwargs)
 
+
+
 from gym_minigrid.wrappers import *
 from gym_minigrid.window import Window
 import argparse
@@ -1124,6 +1190,7 @@ def main():
         else:
             _redraw(obs)
 
+        print("Carrying {}".format(obs["carrying"]))
         print("State visitation {}".format(obs['state_visitation']))
 
     def key_handler(event):
@@ -1166,7 +1233,7 @@ def main():
     parser.add_argument(
         "--env",
         help="gym environment to load",
-        default='MiniGrid-MultiRoom-N6-v0'
+        default='MiniGrid-ObstructedMaze-2Dlh-v0'
     )
     parser.add_argument(
         "--seed",
@@ -1191,6 +1258,7 @@ def main():
 
     env = gym.make(args.env)
     env = StateVisitationHash(env)
+    env = RecordCarrying(env)
 
     if args.agent_view:
         env = RGBImgPartialObsWrapper(env)
