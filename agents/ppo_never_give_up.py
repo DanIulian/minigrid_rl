@@ -12,7 +12,6 @@ from utils.utils import RunningMeanStd, RewardForwardFilter, ActionNames
 from utils.format import preprocess_images
 from utils.ec_curiosity_wrapper import CuriosityEnvWrapper
 from torch_rl.format import default_preprocess_obss
-from agents.eval_agent import EvalAgent
 
 
 class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
@@ -86,18 +85,6 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
         # -- Previous batch of experiences last frame
         self.prev_frame_exps = None
 
-        # -- Init evaluator envs
-        # Eval envs
-        eval_nr_runs = getattr(cfg, "eval_agent_nr_runs", 1)
-        eval_agent_nr_steps = getattr(cfg, "eval_agent_nr_steps", -1)
-        self.eval_agent = EvalAgent(envs,
-                                    acmodel.policy_model,
-                                    None,
-                                    self.preprocess_obss,
-                                    self.out_dir,
-                                    eval_agent_nr_steps,
-                                    eval_nr_runs)
-
         # remember some log values from intrinsic rewards computation
         self.aux_logs = {}
 
@@ -130,9 +117,7 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
 
     def update_parameters(self):
         # Collect experiences
-
         exps, logs = self.collect_experiences()
-        self.eval_agent.on_new_observation() # this happens every 2048 frames
 
         # Initialize log values
         log_entropies = []
@@ -416,7 +401,7 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
         self.aux_logs["mean_life_long_modulator"] = np.mean(modulator_r.cpu().numpy())
         self.aux_logs["var_lfe_long_modulator"] = np.var(modulator_r.cpu().numpy())
 
-        return (modulator_r + 1)
+        return modulator_r + 1
 
     def train_dynamic_models(self,
                              current_embeddings: torch.Tensor,
@@ -584,6 +569,17 @@ class PPONeverGiveUp(TwoValueHeadsBaseGeneral):
                            for i in range(self.num_frames_per_proc)]
 
             exps.states = preprocess_images(full_states, device=self.device)
+
+        # Process
+        if "carrying" in self.obss[0][0].keys():
+            full_carrying = [self.obss[i][j]["carrying"]
+                             for j in range(self.num_procs)
+                             for i in range(self.num_frames_per_proc)]
+
+            exps.carrying = preprocess_images(full_carrying,
+                                              device=self.device,
+                                              max_image_value=1,
+                                              normalize=False)
 
         exps.obs_image = exps.obs.image
 

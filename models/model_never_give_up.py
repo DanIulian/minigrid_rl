@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch_rl
 from models.utils import initialize_parameters2
 from models.model_icm_like import WorldsPolicyModel
+from models.model_disagreement import RandomFeatureExtractor, DynamicsModel
+from models.model_rnd_like import RandomNetwork, PredictionNetwork
 
 
 class NeverGiveUpModel(nn.Module, torch_rl.RecurrentACModel):
@@ -46,6 +48,7 @@ class CuriosityModel(nn.Module):
         self.action_space = torch.Size((action_space.n, ))
         k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
         s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
+        self.carry_size = getattr(cfg, "carry_size", 0)      # if use info about agent carrying objects
 
         self.image_conv = nn.Sequential(
             nn.Conv2d(3, 32, k_sizes[0], s_sizes[0]),
@@ -68,7 +71,7 @@ class CuriosityModel(nn.Module):
 
         # Consider embedding out of fc1
         self.fc1 = nn.Sequential(
-            nn.Linear(self._image_embedding_size, self._embedding_size),
+            nn.Linear(self._image_embedding_size + self.carry_size, self._embedding_size),
             nn.LeakyReLU(inplace=True)
         )
 
@@ -94,6 +97,11 @@ class CuriosityModel(nn.Module):
 
         self.apply(initialize_parameters2)
 
+        if self.carry_size != 0:
+            self.forward = self._forward_carry
+        else:
+            self.forward = self._forward
+
     @property
     def embedding_size(self):
         return self._embedding_size
@@ -102,10 +110,20 @@ class CuriosityModel(nn.Module):
     def memory_size(self):
         return self._embedding_size
 
-    def forward(self, x):
+    def _forward(self, x):
         b_size = x.size()
         x = self.image_conv(x)
         x = x.reshape(b_size[0], -1)
+        x = self.fc1(x)
+
+        return x
+
+    def _forward_carry(self, x, carry_info):
+        b_size = x.size()
+        x = self.image_conv(x)
+        x = x.reshape(b_size[0], -1)
+
+        x = torch.cat([x, carry_info], dim=1)
         x = self.fc1(x)
 
         return x
@@ -118,119 +136,4 @@ class CuriosityModel(nn.Module):
     def forward_state(self, embedding, action_next):
         x = torch.cat([embedding, action_next], dim=1)
         x = self.fc_alpha(x)
-        return x
-
-
-class RandomFeatureExtractor(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(RandomFeatureExtractor, self).__init__()
-
-        print(f"OBS space {obs_space}")
-        n = obs_space["image"][0]
-        m = obs_space["image"][1]
-
-        self._embedding_size = getattr(cfg, "embedding_size", 256)
-        k_sizes = getattr(cfg, "k_sizes", [3, 2, 2])    # kernel size for each layer
-        s_sizes = getattr(cfg, "s_sizes", [1, 1, 1])    # stride size for each layer
-
-        self.image_conv = nn.Sequential(
-            nn.Conv2d(3, 32, k_sizes[0], s_sizes[0]),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(inplace=True),
-
-            nn.Conv2d(32, 32, k_sizes[1], s_sizes[1]),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(inplace=True),
-
-            nn.Conv2d(32, 64, k_sizes[2], s_sizes[2]),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(inplace=True),
-        )
-
-        with torch.no_grad():
-            out_conv_size = self.image_conv(torch.rand(1, obs_space["image"][2], n, m)).size()
-
-        self._image_embedding_size = int(np.prod(out_conv_size))
-
-        # Consider embedding out of fc1
-        self.fc1 = nn.Sequential(
-            nn.Linear(self._image_embedding_size, self._embedding_size),
-            nn.LeakyReLU(inplace=True)
-        )
-
-        self.apply(initialize_parameters2)
-
-    @property
-    def embedding_size(self):
-        return self._embedding_size
-
-    @property
-    def memory_size(self):
-        return self._embedding_size
-
-    @property
-    def network_type(self):
-        return "random"
-
-    def forward(self, x):
-        b_size = x.size()
-
-        x = self.image_conv(x)
-        x = x.reshape(b_size[0], -1)
-
-        local_embedding = self.fc1(x)
-
-        return local_embedding
-
-
-class DynamicsModel(nn.Module):
-    def __init__(self, cfg, obs_space, action_space):
-        super(DynamicsModel, self).__init__()
-
-        self._embedding_size = getattr(cfg, "embedding_size", 512)
-        self._residual_size = getattr(cfg, "residual_size", 512)
-        self._nr_residuals = getattr(cfg, "nr_res_blocks", 4)
-
-        self.fc1 = nn.Sequential(
-            nn.Linear(self._embedding_size + action_space.n, self._residual_size),
-            nn.LeakyReLU(inplace=True),
-        )
-
-        def _get_residual_bloc():
-            return nn.Sequential(
-                nn.Linear(self._residual_size + action_space.n, self._residual_size),
-                nn.LeakyReLU(inplace=True),
-                nn.Linear(self._residual_size, self._residual_size),
-                nn.LeakyReLU(inplace=True),
-            )
-
-        self.res_blocks = nn.ModuleList()
-
-        for _ in range(self._nr_residuals):
-            self.res_blocks.append(_get_residual_bloc())
-
-        self.fc2 = nn.Linear(self._residual_size, self._embedding_size)
-
-        self.apply(initialize_parameters2)
-
-    @property
-    def embedding_size(self):
-        return self._embedding_size
-
-    @property
-    def residual_size(self):
-        return self._residual_size
-
-    def forward(self, x, action_prev):
-        x = torch.cat([x, action_prev], dim=1)
-        x = self.fc1(x)
-
-        for block in self.res_blocks:
-            local_embedding = x
-            x = torch.cat([x, action_prev], dim=1)
-            x = block(x)
-            x = x + local_embedding
-
-        x = self.fc2(x)
-
         return x

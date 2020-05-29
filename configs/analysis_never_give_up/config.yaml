@@ -1,0 +1,4 @@
+main:
+  env: ["MiniGrid-MultiRoom-N7-S7-v0", "MiniGrid-KeyCorridorS4R3-v0",
+  ]
+
