@@ -62,7 +62,7 @@ from analytics.utils import get_experiment_files
 
 matplotlib.use('TkAgg')
 matplotlib.rcParams['figure.figsize'] = (20, 10)
-matplotlib.rcParams['axes.titlesize'] = 'medium'
+matplotlib.rcParams['axes.titlesize'] = 'large'
 
 EXCLUDED_PLOTS = [
     'experiment_id', 'frames', 'run_id',
@@ -329,13 +329,13 @@ def plot_experiments(experiments_path,
                                   data=exp_gdf,
                                   palette='Set1',
                                   ci=95)
-                plt.setp(ax.get_legend().get_texts(), fontsize='18')  # for legend text
+                plt.setp(ax.get_legend().get_texts(), fontsize=26)  # for legend text
 
                 if plot_f == "rreturn_mean":
-                    plt.ylabel("Mean episodic return", fontsize=18)
+                    plt.ylabel("Mean episodic return", fontsize=26)
                 else:
-                    plt.ylabel(plot_f, fontsize=18)
-                plt.yticks(fontsize=18)
+                    plt.ylabel(plot_f, fontsize=26)
+                plt.yticks(fontsize=26)
 
             elif plot_type == "error_plot":
                 # For each sub-group that will appear in the same plot
@@ -367,32 +367,32 @@ def plot_experiments(experiments_path,
 
                     error_fill_plot(unique_x, means, stds, color=colors_map[color_name])
                 plt.gcf().legend([legend_elements[x] for x in subgroup_titles], subgroup_titles,
-                                 loc="upper right")
+                                 loc="upper right", fontsize=26)
 
                 if plot_f == "Melt_value":
-                    plt.ylabel("Number of interactions", fontsize=18)
+                    plt.ylabel("Number of interactions", fontsize=26)
                 elif plot_f == "discovered":
-                    plt.ylabel("Percentage of discovered states", fontsize=18)
+                    plt.ylabel("Percentage of discovered states", fontsize=26)
                 elif plot_f == "unique_states":
-                    plt.ylabel("Number of uniques states visited", fontsize=18)
+                    plt.ylabel("Number of uniques states visited", fontsize=26)
                 elif plot_f == "rreturn_mean":
-                    plt.ylabel("Mean episodic return", fontsize=18)
+                    plt.ylabel("Mean episodic return", fontsize=26)
                 else:
-                    plt.ylabel(plot_f, fontsize=18)
-                plt.yticks(fontsize=18)
+                    plt.ylabel(plot_f, fontsize=26)
+                plt.yticks(fontsize=26)
 
             plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
             if x_axis == "frames":
-                plt.xlabel("Number of frames", fontsize=18)
+                plt.xlabel("Number of frames", fontsize=26)
             else:
-                plt.xlabel(x_axis, fontsize=18)
-            plt.xticks(fontsize=18)
+                plt.xlabel(x_axis, fontsize=26)
+            plt.xticks(fontsize=26)
 
             # Set the title
             if title is None:
-                plt.title(experiment_name, fontsize=24)
+                plt.title(experiment_name, fontsize=32)
             else:
-                plt.title(title, fontsize=24)
+                plt.title(title, fontsize=32)
 
             plt.tight_layout()
             if plot_f == "Melt_value":
