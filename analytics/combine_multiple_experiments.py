@@ -61,7 +61,7 @@ import seaborn as sns
 from analytics.utils import get_experiment_files
 
 matplotlib.use('TkAgg')
-matplotlib.rcParams['figure.figsize'] = (20, 10)
+matplotlib.rcParams['figure.figsize'] = (25, 15)
 matplotlib.rcParams['axes.titlesize'] = 'large'
 
 EXCLUDED_PLOTS = [
@@ -98,6 +98,7 @@ def error_fill_plot(x, y, yerr, color=None, alpha_fill=0.3, ax=None):
         ymin, ymax = yerr
     ax.plot(x, y, color=color)
     ax.fill_between(x, ymax, ymin, color=color, alpha=alpha_fill)
+    return ax
 
 
 def calc_wavg(group, avg_name, weight_name):
@@ -329,13 +330,13 @@ def plot_experiments(experiments_path,
                                   data=exp_gdf,
                                   palette='Set1',
                                   ci=95)
-                plt.setp(ax.get_legend().get_texts(), fontsize=26)  # for legend text
+                plt.setp(ax.get_legend().get_texts(), fontsize=30)  # for legend text
 
                 if plot_f == "rreturn_mean":
-                    plt.ylabel("Mean episodic return", fontsize=26)
+                    plt.ylabel("Mean episodic return", fontsize=30)
                 else:
-                    plt.ylabel(plot_f, fontsize=26)
-                plt.yticks(fontsize=26)
+                    plt.ylabel(plot_f, fontsize=30)
+                plt.yticks(fontsize=30)
 
             elif plot_type == "error_plot":
                 # For each sub-group that will appear in the same plot
@@ -365,34 +366,35 @@ def plot_experiments(experiments_path,
                     except:
                         print("Error!!!!!!!!!")
 
-                    error_fill_plot(unique_x, means, stds, color=colors_map[color_name])
+                    ax = error_fill_plot(unique_x, means, stds, color=colors_map[color_name])
                 plt.gcf().legend([legend_elements[x] for x in subgroup_titles], subgroup_titles,
-                                 loc="upper right", fontsize=26)
+                                 loc="upper right", fontsize=30)
 
                 if plot_f == "Melt_value":
-                    plt.ylabel("Number of interactions", fontsize=26)
+                    plt.ylabel("Number of interactions", fontsize=30)
                 elif plot_f == "discovered":
-                    plt.ylabel("Percentage of discovered states", fontsize=26)
+                    plt.ylabel("Percentage of discovered states", fontsize=30)
                 elif plot_f == "unique_states":
-                    plt.ylabel("Number of uniques states visited", fontsize=26)
+                    plt.ylabel("Number of uniques states visited", fontsize=30)
                 elif plot_f == "rreturn_mean":
-                    plt.ylabel("Mean episodic return", fontsize=26)
+                    plt.ylabel("Mean episodic return", fontsize=30)
                 else:
-                    plt.ylabel(plot_f, fontsize=26)
-                plt.yticks(fontsize=26)
+                    plt.ylabel(plot_f, fontsize=30)
+                plt.yticks(fontsize=30)
 
             plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 3))
+            ax.xaxis.offsetText.set_fontsize(24)
             if x_axis == "frames":
-                plt.xlabel("Number of frames", fontsize=26)
+                plt.xlabel("Number of frames", fontsize=30)
             else:
-                plt.xlabel(x_axis, fontsize=26)
-            plt.xticks(fontsize=26)
+                plt.xlabel(x_axis, fontsize=30)
+            plt.xticks(fontsize=30)
 
             # Set the title
             if title is None:
-                plt.title(experiment_name, fontsize=32)
+                plt.title(experiment_name, fontsize=36)
             else:
-                plt.title(title, fontsize=32)
+                plt.title(title, fontsize=36)
 
             plt.tight_layout()
             if plot_f == "Melt_value":
